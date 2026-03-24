@@ -280,9 +280,14 @@ function persistCurrentSession() {
 }
 
 function cleanupStudyMenuListeners() {
-  if (!studyMenuController) return;
-  studyMenuController.abort();
-  studyMenuController = null;
+  if (studyMenuController) {
+    studyMenuController.abort();
+    studyMenuController = null;
+  }
+  const navLinks = $('#nav-links');
+  if (navLinks) {
+    navLinks.innerHTML = '';
+  }
 }
 
 function restartCurrentSession() {
@@ -296,6 +301,32 @@ function restartCurrentSession() {
   clearSavedSession(currentWorkId);
   currentSession = null;
   startSession(level, mode);
+}
+
+function renderGlobalStudyMenu() {
+  const navLinks = $('#nav-links');
+  if (!navLinks || !currentSession) return;
+
+  navLinks.innerHTML = `
+    <div class="header-session-menu">
+      <button
+        class="quiz-menu-toggle"
+        id="btn-session-menu"
+        type="button"
+        aria-label="Open session menu"
+        aria-expanded="false"
+        aria-controls="session-menu"
+      >
+        <span></span>
+        <span></span>
+        <span></span>
+      </button>
+      <div class="quiz-menu" id="session-menu" hidden>
+        <button class="quiz-menu__item" id="btn-save-quit" type="button">Save &amp; Quit</button>
+        <button class="quiz-menu__item" id="btn-restart-session" type="button">Restart</button>
+      </div>
+    </div>
+  `;
 }
 
 // ---------------------------------------------------------------------------
@@ -383,24 +414,6 @@ function renderStudyCard() {
           <span class="score-chip">Accuracy ${progress.accuracy}%</span>
           <span class="score-chip score-chip--secondary">Streak ${progress.streak}</span>
         </div>
-        <div class="quiz-header__actions">
-          <button
-            class="quiz-menu-toggle"
-            id="btn-session-menu"
-            type="button"
-            aria-label="Open session menu"
-            aria-expanded="false"
-            aria-controls="session-menu"
-          >
-            <span></span>
-            <span></span>
-            <span></span>
-          </button>
-          <div class="quiz-menu" id="session-menu" hidden>
-            <button class="quiz-menu__item" id="btn-save-quit" type="button">Save &amp; Quit</button>
-            <button class="quiz-menu__item" id="btn-restart-session" type="button">Restart</button>
-          </div>
-        </div>
       </div>
       <div class="flip-card" id="flip-card">
         <div class="flip-card-inner">
@@ -422,6 +435,7 @@ function renderStudyCard() {
 
   renderMultipleChoice(question);
   renderFrontNav(Boolean(answer));
+  renderGlobalStudyMenu();
   setupStudyHeaderMenu();
 
   if (answer) {
@@ -464,7 +478,7 @@ function setupStudyHeaderMenu() {
   }, { signal });
 
   document.addEventListener('click', (event) => {
-    if (!event.target.closest('.quiz-header__actions')) {
+    if (!event.target.closest('.header-session-menu')) {
       closeMenu();
     }
   }, { signal });
