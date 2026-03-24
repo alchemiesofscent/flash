@@ -111,7 +111,7 @@ function renderLevelSelect() {
 
       <div class="form-group">
         <label class="form-label">Difficulty</label>
-        <div class="seg-control" id="seg-level">
+        <div class="seg-control seg-control--stack-mobile" id="seg-level">
           ${levels.map(l => `
             <button class="seg-option" data-level="${l.level}">
               <span class="seg-option-label">${l.name}</span>
@@ -320,8 +320,9 @@ function renderMultipleChoice(question) {
   const area = $('#answer-area');
   // Choices are Greek for english-to-greek questions
   const choicesAreGreek = question.type === 'english-to-greek';
+  const choicesClass = question.type === 'form-id' ? 'mc-choices mc-choices--morphology' : 'mc-choices';
   area.innerHTML = `
-    <div class="mc-choices">
+    <div class="${choicesClass}">
       ${question.choices.map((choice, i) => `
         <button class="btn btn-choice ${choicesAreGreek ? 'greek-text' : ''}" data-choice="${i}" data-value="${escapeAttr(choice)}">
           ${escapeHTML(choice)}
@@ -375,7 +376,7 @@ function buildContextHTML(question) {
   return `
     <div class="word-context">
       <p class="context-greek greek-text">${before}<mark>${highlighted}</mark>${after}</p>
-      ${ctx.translation ? `<p class="context-translation">${highlightGlossInTranslation(ctx.translation, question.metadata.context_definition || question.metadata.definition)}</p>` : ''}
+      ${ctx.translation ? `<p class="context-translation">${highlightTranslation(ctx, question.metadata.context_definition, question.metadata.definition)}</p>` : ''}
       <p class="context-ref">— ${escapeHTML(ctx.ref)}</p>
     </div>
   `;
@@ -611,6 +612,27 @@ function renderProgressDashboard() {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+function highlightTranslation(ctx, gloss, definition) {
+  const translation = ctx.translation;
+  const start = ctx.translation_highlight_start;
+  const end = ctx.translation_highlight_end;
+
+  if (
+    Number.isInteger(start) &&
+    Number.isInteger(end) &&
+    start >= 0 &&
+    end <= translation.length &&
+    start < end
+  ) {
+    const before = escapeHTML(translation.slice(0, start));
+    const highlight = escapeHTML(translation.slice(start, end));
+    const after = escapeHTML(translation.slice(end));
+    return `${before}<mark>${highlight}</mark>${after}`;
+  }
+
+  return highlightGlossInTranslation(translation, gloss || definition);
+}
 
 function highlightGlossInTranslation(translation, gloss) {
   if (!gloss) return escapeHTML(translation);

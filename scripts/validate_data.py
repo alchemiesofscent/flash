@@ -306,6 +306,23 @@ def validate_file(filepath):
                     enrichment_errors += 1
                 else:
                     contexts_with_translation += 1
+                    ths = ctx.get("translation_highlight_start")
+                    the = ctx.get("translation_highlight_end")
+                    if not isinstance(ths, int) or not isinstance(the, int):
+                        failures.append(
+                            error(
+                                f"{prefix}.contexts[{j}].translation_highlight_start/end must be ints"
+                            )
+                        )
+                        enrichment_errors += 1
+                    elif ths < 0 or the > len(translation) or ths >= the:
+                        failures.append(
+                            error(
+                                f"{prefix}.contexts[{j}].translation highlight bounds out of range "
+                                f"(start={ths}, end={the}, translation_len={len(translation)})"
+                            )
+                        )
+                        enrichment_errors += 1
 
     # --- Morphology stats ---
     words_with_detailed_morph = 0

@@ -25,6 +25,8 @@ import time
 from copy import deepcopy
 from pathlib import Path
 
+from translation_highlights import apply_translation_highlights_to_word
+
 try:
     import anthropic
 except ImportError:
@@ -429,6 +431,9 @@ def apply_enrichments(batch, enrichments, morph_only=False, etymology_only=False
             for i, ctx in enumerate(contexts):
                 if i < len(translations) and translations[i]:
                     ctx["translation"] = translations[i]
+
+            if contexts:
+                apply_translation_highlights_to_word(word)
 
             if enrichment.get("etymology"):
                 word["etymology"] = enrichment["etymology"]

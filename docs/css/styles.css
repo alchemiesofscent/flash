@@ -733,6 +733,11 @@ header h1 {
     color            var(--transition-fast);
   border: none;
   background: none;
+  min-width: 0;
+  text-align: center;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 /* Borders between horizontal options */
@@ -1395,7 +1400,8 @@ header h1 {
 /* MC choice buttons */
 .btn-choice {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
+  justify-content: flex-start;
   width: 100%;
   min-height: var(--touch-target);
   padding: var(--space-3) var(--space-4);
@@ -1406,6 +1412,11 @@ header h1 {
   border-radius: var(--radius-md);
   transition: border-color var(--transition-fast), background-color var(--transition-fast);
   cursor: pointer;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  line-height: 1.35;
+  min-width: 0;
 }
 
 .btn-choice:hover:not(:disabled) {
@@ -1891,8 +1902,24 @@ header h1 {
     grid-template-columns: 1fr 1fr;
   }
 
+  .mc-choices--morphology {
+    display: flex;
+    grid-template-columns: none;
+  }
+
   .prompt-text {
     font-size: var(--font-size-3xl);
+  }
+}
+
+@media (max-width: 767px) {
+  .seg-control--stack-mobile {
+    flex-direction: column;
+  }
+
+  .seg-control--stack-mobile .seg-option + .seg-option {
+    border-left: none;
+    border-top: 1.5px solid var(--color-border);
   }
 }
 
