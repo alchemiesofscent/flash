@@ -15,6 +15,7 @@ const state = {
 let registration = null;
 let deferredPrompt = null;
 let reloadOnControllerChange = false;
+let pendingUpdateWorker = null;
 
 function detectIos() {
   const ua = navigator.userAgent || '';
@@ -154,20 +155,40 @@ async function promptInstall() {
 }
 
 async function applyUpdate() {
-  if (registration?.waiting) {
+  const waitingWorker = registration?.waiting || pendingUpdateWorker;
+
+  if (waitingWorker) {
     reloadOnControllerChange = true;
-    registration.waiting.postMessage({ type: 'SKIP_WAITING' });
+    pendingUpdateWorker = waitingWorker;
+    waitingWorker.postMessage({ type: 'SKIP_WAITING' });
     return;
   }
 
   if (registration) {
-    await registration.update();
+    try {
+      await registration.update();
+    } catch (err) {
+      console.warn('Update check failed:', err);
+    }
+  }
+
+  const refreshedWaitingWorker = registration?.waiting || pendingUpdateWorker;
+  if (refreshedWaitingWorker) {
+    reloadOnControllerChange = true;
+    pendingUpdateWorker = refreshedWaitingWorker;
+    refreshedWaitingWorker.postMessage({ type: 'SKIP_WAITING' });
+    return;
+  }
+
+  if (state.updateAvailable) {
+    window.location.reload();
   }
 }
 
 function monitorRegistration(reg) {
   registration = reg;
   if (reg.waiting) {
+    pendingUpdateWorker = reg.waiting;
     syncState({ updateAvailable: true });
   }
 
@@ -176,6 +197,7 @@ function monitorRegistration(reg) {
     if (!worker) return;
     worker.addEventListener('statechange', () => {
       if (worker.state === 'installed' && navigator.serviceWorker.controller) {
+        pendingUpdateWorker = reg.waiting || worker;
         syncState({ updateAvailable: true });
       }
     });
@@ -190,6 +212,9 @@ async function registerServiceWorker() {
     monitorRegistration(reg);
     navigator.serviceWorker.addEventListener('controllerchange', () => {
       if (reloadOnControllerChange) {
+        reloadOnControllerChange = false;
+        pendingUpdateWorker = null;
+        syncState({ updateAvailable: false });
         window.location.reload();
       }
     });

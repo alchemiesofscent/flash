@@ -3,7 +3,6 @@
 import {
   getProgress,
   updateProgress,
-  recordStudySession,
   getLevelStats,
   isMastered,
   getSettings,
@@ -24,9 +23,7 @@ import {
   goToPreviousQuestion,
   goToNextQuestion,
   canGoPrevious,
-  getSessionProgress,
-  getStudySummary,
-  endSession
+  getSessionProgress
 } from './state.js';
 import { renderPwaHomePrompt } from './pwa.js';
 
@@ -40,6 +37,7 @@ let currentWorkId = null;
 let currentVocab = null;
 let selectedLevel = null;
 let selectedMode = null;
+let studyMenuController = null;
 
 // ---------------------------------------------------------------------------
 // Screen management
@@ -64,6 +62,7 @@ function showScreen(id, { replaceState = false } = {}) {
 // ---------------------------------------------------------------------------
 
 export function renderHome(works) {
+  cleanupStudyMenuListeners();
   const home = $('#home');
   home.innerHTML = `
     <div class="screen-inner">
@@ -116,6 +115,7 @@ async function selectWork(workId) {
 const LEVEL_NAMES = { 1: 'Beginner', 2: 'Intermediate', 3: 'Advanced' };
 
 function renderLevelSelect() {
+  cleanupStudyMenuListeners();
   selectedLevel = null;
   selectedMode = null;
 
@@ -279,6 +279,25 @@ function persistCurrentSession() {
   }
 }
 
+function cleanupStudyMenuListeners() {
+  if (!studyMenuController) return;
+  studyMenuController.abort();
+  studyMenuController = null;
+}
+
+function restartCurrentSession() {
+  if (!currentSession) return;
+
+  const { level, mode } = currentSession;
+  const confirmed = window.confirm('Restart this study session? Current progress in this session will be lost.');
+  if (!confirmed) return;
+
+  cleanupStudyMenuListeners();
+  clearSavedSession(currentWorkId);
+  currentSession = null;
+  startSession(level, mode);
+}
+
 // ---------------------------------------------------------------------------
 // Start a session
 // ---------------------------------------------------------------------------
@@ -337,6 +356,7 @@ function ensureQuestionBuffer(minAhead = MIN_AHEAD_BUFFER) {
 // ---------------------------------------------------------------------------
 
 function renderStudyCard() {
+  cleanupStudyMenuListeners();
   ensureQuestionBuffer();
 
   const question = currentQuestion(currentSession);
@@ -364,8 +384,22 @@ function renderStudyCard() {
           <span class="score-chip score-chip--secondary">Streak ${progress.streak}</span>
         </div>
         <div class="quiz-header__actions">
-          <button class="btn btn-secondary quiz-save" id="btn-save-exit">Save &amp; Exit</button>
-          <button class="btn btn-secondary quiz-save" id="btn-end-session">End Session</button>
+          <button
+            class="quiz-menu-toggle"
+            id="btn-session-menu"
+            type="button"
+            aria-label="Open session menu"
+            aria-expanded="false"
+            aria-controls="session-menu"
+          >
+            <span></span>
+            <span></span>
+            <span></span>
+          </button>
+          <div class="quiz-menu" id="session-menu" hidden>
+            <button class="quiz-menu__item" id="btn-save-quit" type="button">Save &amp; Quit</button>
+            <button class="quiz-menu__item" id="btn-restart-session" type="button">Restart</button>
+          </div>
         </div>
       </div>
       <div class="flip-card" id="flip-card">
@@ -388,18 +422,69 @@ function renderStudyCard() {
 
   renderMultipleChoice(question);
   renderFrontNav(Boolean(answer));
-
-  $('#btn-save-exit')?.addEventListener('click', () => {
-    persistCurrentSession();
-    renderLevelSelect();
-  });
-  $('#btn-end-session')?.addEventListener('click', finalizeSessionAndReturn);
+  setupStudyHeaderMenu();
 
   if (answer) {
     showFeedback(question, answer.userAnswer, answer.correct, { instant: true });
   }
 
   showScreen('quiz', { replaceState: true });
+}
+
+function setupStudyHeaderMenu() {
+  const toggle = $('#btn-session-menu');
+  const menu = $('#session-menu');
+  if (!toggle || !menu) return;
+
+  const controller = new AbortController();
+  const { signal } = controller;
+  studyMenuController = controller;
+
+  const closeMenu = () => {
+    menu.hidden = true;
+    toggle.setAttribute('aria-expanded', 'false');
+  };
+
+  const openMenu = () => {
+    menu.hidden = false;
+    toggle.setAttribute('aria-expanded', 'true');
+  };
+
+  toggle.addEventListener('click', (event) => {
+    event.stopPropagation();
+    if (menu.hidden) {
+      openMenu();
+    } else {
+      closeMenu();
+    }
+  }, { signal });
+
+  menu.addEventListener('click', (event) => {
+    event.stopPropagation();
+  }, { signal });
+
+  document.addEventListener('click', (event) => {
+    if (!event.target.closest('.quiz-header__actions')) {
+      closeMenu();
+    }
+  }, { signal });
+
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') {
+      closeMenu();
+    }
+  }, { signal });
+
+  $('#btn-save-quit')?.addEventListener('click', () => {
+    closeMenu();
+    persistCurrentSession();
+    renderLevelSelect();
+  }, { signal });
+
+  $('#btn-restart-session')?.addEventListener('click', () => {
+    closeMenu();
+    restartCurrentSession();
+  }, { signal });
 }
 
 function renderMultipleChoice(question) {
@@ -554,22 +639,8 @@ function advanceSession() {
   renderStudyCard();
 }
 
-function finalizeSessionAndReturn() {
-  if (!currentSession) return;
-
-  currentSession = endSession(currentSession);
-  const summary = getStudySummary(currentSession);
-  recordStudySession(currentWorkId, summary, currentSession.level, currentSession.mode);
-  clearSavedSession(currentWorkId);
-  currentSession = null;
-  renderLevelSelect();
-}
-
-// ---------------------------------------------------------------------------
-// Progress dashboard
-// ---------------------------------------------------------------------------
-
 function renderProgressDashboard() {
+  cleanupStudyMenuListeners();
   const screen = $('#progress');
   const progress = getProgress(currentWorkId);
   const allWords = getAllWords(currentVocab);

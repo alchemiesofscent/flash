@@ -109,9 +109,7 @@ async function warmWorkData() {
 }
 
 self.addEventListener('install', (event) => {
-  event.waitUntil(
-    cacheShell().then(() => self.skipWaiting())
-  );
+  event.waitUntil(cacheShell());
 });
 
 self.addEventListener('activate', (event) => {
