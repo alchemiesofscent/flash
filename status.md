@@ -102,14 +102,28 @@ Publish the complete working flashcard app, including generated Plato and Aristo
 | ID | Task | Owner | Depends On | Status | Acceptance |
 | --- | --- | --- | --- | --- | --- |
 | G1 | Create public repo `alchemiesofscent/flash` and set `origin` | Codex | none | completed | Remote exists and local repo points to it |
-| G2 | Commit the complete working tree, including generated deploy artifacts | Codex | G1 | in progress | `docs/` site, `docs/data/*.json`, scripts, and source TEI are pushed together |
-| G3 | Enable GitHub Pages from `main:/docs` | Codex | G2 | pending | Pages source is configured and deploy is active |
-| G4 | Verify the live site and published JSON endpoints | Codex | G3 | pending | Live URL serves app shell, manifest, service worker, and both work JSON files |
+| G2 | Commit the complete working tree, including generated deploy artifacts | Codex | G1 | completed | `docs/` site, `docs/data/*.json`, scripts, and source TEI are pushed together |
+| G3 | Enable GitHub Pages from `main:/docs` | Codex | G2 | completed | Pages source is configured and deploy is active |
+| G4 | Verify the live site and published JSON endpoints | Codex | G3 | completed | Live URL serves app shell, manifest, service worker, and both work JSON files |
 
 ### Execution Log
 - 2026-03-24: Created the public repository `https://github.com/alchemiesofscent/flash` and set it as `origin` for the local `main` branch.
+- 2026-03-24: Committed and pushed the complete working app, including the PWA shell, Plato data, fully enriched Aristotle data, pipeline scripts, and source TEI files.
+- 2026-03-24: Enabled GitHub Pages from `main:/docs`; GitHub published the site at `https://alchemiesofscent.github.io/flash/`.
+- 2026-03-24: Verified the live root, manifest, service worker, works index, and Aristotle JSON endpoint all return `200`.
 
 ### Deployment
 - Repo: `https://github.com/alchemiesofscent/flash`
 - Pages source: `main` branch, `/docs` folder
-- Expected live URL: `https://alchemiesofscent.github.io/flash/`
+- Live URL: `https://alchemiesofscent.github.io/flash/`
+
+### Testing
+- `python3 scripts/validate_data.py docs/data/tlg0086035.json`
+- `node --check docs/sw.js`
+- `node --check docs/js/app.js`
+- `node --check docs/js/pwa.js`
+- `curl -I -L https://alchemiesofscent.github.io/flash/`
+- `curl -I https://alchemiesofscent.github.io/flash/manifest.json`
+- `curl -I https://alchemiesofscent.github.io/flash/sw.js`
+- `curl -I https://alchemiesofscent.github.io/flash/data/works.json`
+- `curl -I https://alchemiesofscent.github.io/flash/data/tlg0086035.json`
