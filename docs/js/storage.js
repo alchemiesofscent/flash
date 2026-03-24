@@ -1,6 +1,7 @@
 // localStorage wrapper for progress and settings persistence
 
 const PROGRESS_PREFIX = 'flash_progress_';
+const SESSION_PREFIX = 'flash_session_';
 const SETTINGS_KEY = 'flash_settings';
 
 const DEFAULT_SETTINGS = {
@@ -58,11 +59,31 @@ export function updateProgress(workId, wordId, correct) {
 export function recordQuiz(workId, level, score, total, mode) {
   const progress = getProgress(workId);
   progress.quizHistory.push({
+    type: 'quiz',
     date: new Date().toISOString(),
     level,
     score,
     total,
     mode: mode || null
+  });
+  _saveProgress(workId, progress);
+}
+
+/**
+ * Record a completed study session snapshot in history.
+ */
+export function recordStudySession(workId, summary, level, mode) {
+  const progress = getProgress(workId);
+  progress.quizHistory.push({
+    type: 'study-session',
+    date: new Date().toISOString(),
+    level,
+    mode: mode || null,
+    seen: summary.seen,
+    correct: summary.correct,
+    incorrect: summary.incorrect,
+    accuracy: summary.accuracy,
+    duration: summary.duration
   });
   _saveProgress(workId, progress);
 }
@@ -123,6 +144,7 @@ export function saveSettings(settings) {
 export function resetProgress(workId) {
   try {
     localStorage.removeItem(PROGRESS_PREFIX + workId);
+    localStorage.removeItem(SESSION_PREFIX + workId);
   } catch (e) {
     console.warn('Failed to reset progress:', e);
   }
@@ -136,7 +158,7 @@ export function resetAll() {
     const keys = [];
     for (let i = 0; i < localStorage.length; i++) {
       const key = localStorage.key(i);
-      if (key && (key.startsWith(PROGRESS_PREFIX) || key === SETTINGS_KEY)) {
+      if (key && (key.startsWith(PROGRESS_PREFIX) || key.startsWith(SESSION_PREFIX) || key === SETTINGS_KEY)) {
         keys.push(key);
       }
     }
@@ -151,5 +173,53 @@ function _saveProgress(workId, progress) {
     localStorage.setItem(PROGRESS_PREFIX + workId, JSON.stringify(progress));
   } catch (e) {
     console.warn('Failed to save progress:', e);
+  }
+}
+
+/**
+ * Get a saved in-progress session for a work, if one exists.
+ */
+export function getSavedSession(workId) {
+  try {
+    const raw = localStorage.getItem(SESSION_PREFIX + workId);
+    if (!raw) return null;
+
+    const session = JSON.parse(raw);
+    if (
+      session &&
+      session.workId === workId &&
+      Array.isArray(session.questions) &&
+      typeof session.answersById === 'object' &&
+      typeof session.stats === 'object'
+    ) {
+      return session;
+    }
+  } catch (e) {
+    console.warn('Failed to read saved session:', e);
+  }
+  return null;
+}
+
+/**
+ * Persist an in-progress session for a work.
+ */
+export function saveSession(session) {
+  if (!session?.workId) return;
+
+  try {
+    localStorage.setItem(SESSION_PREFIX + session.workId, JSON.stringify(session));
+  } catch (e) {
+    console.warn('Failed to save session:', e);
+  }
+}
+
+/**
+ * Clear the saved session for a work.
+ */
+export function clearSavedSession(workId) {
+  try {
+    localStorage.removeItem(SESSION_PREFIX + workId);
+  } catch (e) {
+    console.warn('Failed to clear saved session:', e);
   }
 }

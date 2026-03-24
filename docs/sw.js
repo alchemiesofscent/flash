@@ -1,4 +1,4 @@
-const VERSION = 'v2';
+const VERSION = 'v4';
 const SHELL_CACHE = `flash-shell-${VERSION}`;
 const DATA_CACHE = `flash-data-${VERSION}`;
 const RUNTIME_CACHE = `flash-runtime-${VERSION}`;

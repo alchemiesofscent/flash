@@ -2,6 +2,8 @@
 
 import { shuffleArray, pickDistractors } from './utils.js';
 
+const RECENT_WORD_BLOCK = 3;
+
 /**
  * Determine whether a word is eligible for form-id questions.
  * Requires at least one form with morphology info.
@@ -10,43 +12,69 @@ function isFormIdEligible(word) {
   return word.forms && word.forms.length >= 1 && word.forms.some(f => f.morphology);
 }
 
-/**
- * Pick a random form from a word. Prefers forms that differ from the lemma
- * (more interesting question), but falls back to any form.
- */
-function pickRandomForm(word) {
-  const nonLemma = word.forms.filter(f => f.form !== word.lemma && f.morphology);
-  const pool = nonLemma.length > 0 ? nonLemma : word.forms.filter(f => f.morphology);
-  return pool[Math.floor(Math.random() * pool.length)];
+function pickRandom(arr) {
+  if (!arr || arr.length === 0) return null;
+  return arr[Math.floor(Math.random() * arr.length)];
 }
 
-/**
- * Build a greek-to-english question object.
- */
-function buildGreekToEnglish(word, allWords) {
+function pickWordForm(word, {
+  preferredForm = null,
+  excludeForms = [],
+  requireMorphology = false
+} = {}) {
+  const excluded = new Set(excludeForms.filter(Boolean));
+  const forms = (word.forms || []).filter(f => !requireMorphology || f.morphology);
+  if (forms.length === 0) return null;
+
+  if (preferredForm) {
+    const explicit = forms.find(f => f.form === preferredForm && !excluded.has(f.form));
+    if (explicit) return explicit;
+  }
+
+  const nonLemma = forms.filter(f => f.form !== word.lemma && !excluded.has(f.form));
+  if (nonLemma.length > 0) {
+    return pickRandom(nonLemma);
+  }
+
+  const remaining = forms.filter(f => !excluded.has(f.form));
+  if (remaining.length > 0) {
+    return pickRandom(remaining);
+  }
+
+  return pickRandom(forms);
+}
+
+function baseMetadata(word) {
+  return {
+    lemma: word.lemma,
+    definition: word.definition,
+    context_definition: word.context_definition,
+    etymology: word.etymology,
+    forms: word.forms || [],
+    contexts: word.contexts || []
+  };
+}
+
+function buildGreekToEnglish(word, allWords, options = {}) {
   const correct = word.context_definition || word.definition;
   const distractors = pickDistractors(word, allWords, 3);
   const choices = shuffleArray([correct, ...distractors.map(d => d.context_definition || d.definition)]);
 
-  // Show a random inflected form; fall back to lemma if forms is empty
-  const forms = word.forms || [];
-  const selectedForm = forms.length > 0
-    ? forms[Math.floor(Math.random() * forms.length)].form
-    : word.lemma;
+  const selectedForm = pickWordForm(word, {
+    preferredForm: options.preferredForm,
+    excludeForms: options.excludeForms
+  });
 
   return {
     type: 'greek-to-english',
-    prompt: { text: selectedForm, subtext: 'What does this word mean?' },
+    prompt: { text: selectedForm?.form || word.lemma, subtext: 'What does this word mean?' },
     correctAnswer: correct,
     choices,
     wordId: word.id,
-    metadata: { lemma: word.lemma, definition: word.definition, context_definition: word.context_definition, etymology: word.etymology, forms: word.forms, contexts: word.contexts || [] }
+    metadata: baseMetadata(word)
   };
 }
 
-/**
- * Build an english-to-greek question object.
- */
 function buildEnglishToGreek(word, allWords) {
   const correct = word.lemma;
   const distractors = pickDistractors(word, allWords, 3);
@@ -58,33 +86,34 @@ function buildEnglishToGreek(word, allWords) {
     correctAnswer: correct,
     choices,
     wordId: word.id,
-    metadata: { lemma: word.lemma, definition: word.definition, context_definition: word.context_definition, etymology: word.etymology, forms: word.forms, contexts: word.contexts || [] }
+    metadata: baseMetadata(word)
   };
 }
 
-/**
- * Build a form-id question object (MC only — answer is the morphology string).
- */
-function buildFormId(word, allWords) {
-  const form = pickRandomForm(word);
-  const correct = form.morphology;
+function buildFormId(word, allWords, options = {}) {
+  const form = pickWordForm(word, {
+    preferredForm: options.preferredForm,
+    excludeForms: options.excludeForms,
+    requireMorphology: true
+  });
+  const fallbackForm = form || pickWordForm(word, { preferredForm: options.preferredForm, excludeForms: options.excludeForms });
+  const selectedForm = form || fallbackForm;
+  const correct = selectedForm?.morphology || 'Unknown morphology';
 
-  // Collect morphology strings from other words' forms as distractors.
   const otherForms = [];
   for (const other of allWords) {
     if (other.id === word.id || !other.forms) continue;
-    for (const f of other.forms) {
-      if (f.morphology !== form.morphology) {
-        otherForms.push(f.morphology);
+    for (const candidate of other.forms) {
+      if (candidate.morphology && candidate.morphology !== correct) {
+        otherForms.push(candidate.morphology);
       }
     }
   }
-  // De-duplicate, shuffle, and take 3.
+
   const uniqueOtherForms = [...new Set(otherForms)];
   shuffleArray(uniqueOtherForms);
   const distractors = uniqueOtherForms.slice(0, 3);
 
-  // Pad with placeholder descriptions if the pool is sparse.
   while (distractors.length < 3) {
     distractors.push(`morphology option ${distractors.length + 1}`);
   }
@@ -93,76 +122,126 @@ function buildFormId(word, allWords) {
 
   return {
     type: 'form-id',
-    prompt: { text: form.form, subtext: 'Identify this form' },
+    prompt: { text: selectedForm?.form || word.lemma, subtext: 'Identify this form' },
     correctAnswer: correct,
     choices,
     wordId: word.id,
-    metadata: { lemma: word.lemma, definition: word.definition, context_definition: word.context_definition, etymology: word.etymology, forms: word.forms, contexts: word.contexts || [] }
+    metadata: baseMetadata(word)
   };
 }
 
-/**
- * Pick `n` random items from an array without repetition.
- * If n >= arr.length, returns a shuffled copy of the entire array.
- */
-function pickRandom(arr, n) {
-  const copy = [...arr];
-  shuffleArray(copy);
-  return copy.slice(0, n);
+function buildQuestion(word, allWords, mode, options = {}) {
+  if (mode === 'english-to-greek') {
+    return buildEnglishToGreek(word, allWords);
+  }
+  if (mode === 'form-id') {
+    return buildFormId(word, allWords, options);
+  }
+  if (mode === 'mixed') {
+    const mixedTypes = ['greek-to-english', 'english-to-greek'];
+    if (isFormIdEligible(word)) {
+      mixedTypes.push('form-id');
+    }
+    const chosenType = pickRandom(mixedTypes);
+    return buildQuestion(word, allWords, chosenType, options);
+  }
+  return buildGreekToEnglish(word, allWords, options);
 }
 
-/**
- * Generate a question set from a word list for a single quiz mode.
- *
- * @param {Array}  words    - The words to draw questions from (already filtered by level).
- * @param {Array}  allWords - The full vocabulary pool (used for distractor picking).
- * @param {Object} config   - { count, mode }
- * @returns {Array} Array of question objects.
- */
-export function generateQuestionSet(words, allWords, config = {}) {
-  const {
-    count = 10,
-    mode = 'greek-to-english',
-  } = config;
+function recentWordSet(session) {
+  return new Set((session?.recentWordIds || []).slice(-RECENT_WORD_BLOCK));
+}
 
-  let pool;
-  let builder;
-
-  if (mode === 'mixed') {
-    // 40% greek-to-english, 30% english-to-greek, 30% form-id
-    const formIdEligible = words.filter(isFormIdEligible);
-    let nFormId = Math.round(count * 0.3);
-    // Cap form-id by eligible count
-    nFormId = Math.min(nFormId, formIdEligible.length);
-    const shortfall = Math.round(count * 0.3) - nFormId;
-    // Redistribute shortfall proportionally (4:3 ratio for the other two)
-    const nGreekToEng = Math.round(count * 0.4) + Math.round(shortfall * 4 / 7);
-    const nEngToGreek = count - nGreekToEng - nFormId;
-
-    const questions = [
-      ...pickRandom(words, nGreekToEng).map(w => buildGreekToEnglish(w, allWords)),
-      ...pickRandom(words, nEngToGreek).map(w => buildEnglishToGreek(w, allWords)),
-      ...pickRandom(formIdEligible, nFormId).map(w => buildFormId(w, allWords)),
-    ];
-    return shuffleArray(questions);
-  } else if (mode === 'form-id') {
-    pool = pickRandom(words.filter(isFormIdEligible), count);
-    builder = buildFormId;
-  } else if (mode === 'english-to-greek') {
-    pool = pickRandom(words, count);
-    builder = buildEnglishToGreek;
-  } else {
-    pool = pickRandom(words, count);
-    builder = buildGreekToEnglish;
+function wordWeight(word, session) {
+  const stats = session?.wordStats?.[word.id];
+  if (!stats) {
+    return 1.5;
   }
 
-  const questions = pool.map(word => builder(word, allWords));
-  return shuffleArray(questions);
+  let weight = 1 + (stats.urgency || 0) * 0.8;
+  if (stats.seen === 0) {
+    weight += 0.4;
+  }
+  if (stats.correct > stats.incorrect) {
+    weight *= 0.75;
+  }
+  if (stats.incorrect > stats.correct) {
+    weight *= 1.2;
+  }
+  if (stats.streak >= 2) {
+    weight *= 0.7;
+  }
+
+  return Math.max(0.2, weight);
 }
 
-/**
- * Count how many words at a given level are eligible for form-id questions.
- */
+function pickWeightedWord(words, session) {
+  if (!words || words.length === 0) return null;
+
+  const blockedRecent = recentWordSet(session);
+  let pool = words.filter(word => !blockedRecent.has(word.id));
+  if (pool.length === 0) {
+    pool = words;
+  }
+
+  const totalWeight = pool.reduce((sum, word) => sum + wordWeight(word, session), 0);
+  if (totalWeight <= 0) {
+    return pickRandom(pool);
+  }
+
+  let threshold = Math.random() * totalWeight;
+  for (const word of pool) {
+    threshold -= wordWeight(word, session);
+    if (threshold <= 0) {
+      return word;
+    }
+  }
+
+  return pool[pool.length - 1];
+}
+
+function questionOptionsFromHistory(word, session) {
+  const wordStats = session?.wordStats?.[word.id];
+  const excludeForms = wordStats?.lastPromptText ? [wordStats.lastPromptText] : [];
+  return { excludeForms };
+}
+
+export function generateAdaptiveQuestion(levelWords, allWords, session, mode) {
+  const eligibleWords = mode === 'form-id'
+    ? levelWords.filter(isFormIdEligible)
+    : levelWords;
+  if (eligibleWords.length === 0) return null;
+
+  const word = pickWeightedWord(eligibleWords, session);
+  if (!word) return null;
+
+  return buildQuestion(word, allWords, mode, questionOptionsFromHistory(word, session));
+}
+
+export function seedQuestionQueue(levelWords, allWords, mode, count = 5, session = null) {
+  const questions = [];
+  let workingSession = session || { wordStats: {}, recentWordIds: [] };
+
+  for (let i = 0; i < count; i += 1) {
+    const question = generateAdaptiveQuestion(levelWords, allWords, workingSession, mode);
+    if (!question) break;
+    questions.push(question);
+    workingSession = {
+      ...workingSession,
+      recentWordIds: [...(workingSession.recentWordIds || []), question.wordId].slice(-RECENT_WORD_BLOCK),
+      wordStats: {
+        ...(workingSession.wordStats || {}),
+        [question.wordId]: {
+          ...(workingSession.wordStats?.[question.wordId] || {}),
+          lastPromptText: question.prompt?.text || null,
+        }
+      }
+    };
+  }
+
+  return questions;
+}
+
 export function countFormIdEligible(words) {
   return words.filter(isFormIdEligible).length;
 }

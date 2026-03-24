@@ -1,13 +1,39 @@
 // UI rendering and event handling module
 
-import { getProgress, updateProgress, recordQuiz, getLevelStats, isMastered, getSettings, saveSettings, resetProgress } from './storage.js';
+import {
+  getProgress,
+  updateProgress,
+  recordStudySession,
+  getLevelStats,
+  isMastered,
+  getSettings,
+  saveSettings,
+  getSavedSession,
+  saveSession,
+  clearSavedSession
+} from './storage.js';
 import { fetchVocab, getWordsForLevel, getAllWords } from './data.js';
-import { generateQuestionSet, countFormIdEligible } from './questions.js';
-import { createSession, currentQuestion, answerQuestion, getResults } from './state.js';
+import { seedQuestionQueue, generateAdaptiveQuestion, countFormIdEligible } from './questions.js';
+import {
+  createSession,
+  restoreSession,
+  currentQuestion,
+  getAnswerRecord,
+  answerCurrentQuestion,
+  appendQuestions,
+  goToPreviousQuestion,
+  goToNextQuestion,
+  canGoPrevious,
+  getSessionProgress,
+  getStudySummary,
+  endSession
+} from './state.js';
 import { renderPwaHomePrompt } from './pwa.js';
 
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => document.querySelectorAll(sel);
+const INITIAL_QUEUE_SIZE = 5;
+const MIN_AHEAD_BUFFER = 3;
 
 let currentSession = null;
 let currentWorkId = null;
@@ -59,12 +85,11 @@ export function renderHome(works) {
   `;
   renderPwaHomePrompt(home.querySelector('.screen-inner'));
 
-  home.addEventListener('click', async (e) => {
+  home.onclick = async (e) => {
     const card = e.target.closest('[data-work-id]');
     if (!card) return;
-    const workId = card.dataset.workId;
-    await selectWork(workId);
-  });
+    await selectWork(card.dataset.workId);
+  };
 
   showScreen('home', { replaceState: true });
 }
@@ -96,11 +121,15 @@ function renderLevelSelect() {
 
   const screen = $('#level-select');
   const levels = [];
-  for (let i = 1; i <= 3; i++) {
+  for (let i = 1; i <= 3; i += 1) {
     const stats = getLevelStats(currentWorkId, currentVocab.words, i);
     const wordCount = getWordsForLevel(currentVocab, i).length;
     levels.push({ level: i, name: LEVEL_NAMES[i], wordCount, ...stats });
   }
+
+  const savedSession = loadSavedSessionForCurrentWork();
+  const savedProgress = savedSession ? getSessionProgress(savedSession) : null;
+  const startButtonLabel = savedSession ? 'Start New Study Session' : 'Start Studying';
 
   screen.innerHTML = `
     <div class="screen-inner setup-form">
@@ -109,20 +138,37 @@ function renderLevelSelect() {
         <p class="text-muted">${escapeHTML(currentVocab.metadata.author)} &middot; ${currentVocab.metadata.unique_lemmas} words</p>
       </div>
 
+      ${savedSession ? `
+        <div class="card session-resume-card">
+          <h3>Saved Study Session</h3>
+          <p class="session-resume-card__meta">${escapeHTML(LEVEL_NAMES[savedSession.level] || `Level ${savedSession.level}`)} &middot; ${escapeHTML(formatModeLabel(savedSession.mode))}</p>
+          <div class="session-resume-card__stats">
+            <span>Seen ${savedProgress.seen}</span>
+            <span>Accuracy ${savedProgress.accuracy}%</span>
+            <span>Streak ${savedProgress.streak}</span>
+          </div>
+          <div class="action-row action-row--compact">
+            <button class="btn btn-primary" id="btn-resume-session">Resume Session</button>
+            <button class="btn btn-secondary" id="btn-discard-session">Discard Saved</button>
+          </div>
+          <p class="session-resume-card__note">Starting a new session replaces this saved stream.</p>
+        </div>
+      ` : ''}
+
       <div class="form-group">
         <label class="form-label">Difficulty</label>
         <div class="seg-control seg-control--stack-mobile" id="seg-level">
           ${levels.map(l => `
             <button class="seg-option" data-level="${l.level}">
               <span class="seg-option-label">${l.name}</span>
-              <span class="seg-option-detail">${l.wordCount} words &middot; ${l.percentage}%</span>
+              <span class="seg-option-detail">${l.wordCount} words &middot; ${l.percentage}% mastered</span>
             </button>
           `).join('')}
         </div>
       </div>
 
       <div class="form-group">
-        <label class="form-label">Quiz Mode</label>
+        <label class="form-label">Study Mode</label>
         <div class="seg-control seg-control--vertical" id="seg-mode">
           <button class="seg-option" data-mode="greek-to-english">
             <span class="seg-option-label">Greek &rarr; English</span>
@@ -139,13 +185,8 @@ function renderLevelSelect() {
         </div>
       </div>
 
-      <div class="form-group">
-        <label class="form-label" for="question-count">Questions: <span id="count-display">10</span></label>
-        <input type="range" id="question-count" class="range-input" min="5" max="50" step="5" value="10">
-      </div>
-
       <div class="action-row">
-        <button class="btn btn-primary start-btn" id="btn-start-quiz" disabled>Start Quiz</button>
+        <button class="btn btn-primary start-btn" id="btn-start-quiz" disabled>${startButtonLabel}</button>
       </div>
       <div class="action-row action-row--secondary">
         <button class="btn btn-secondary" id="btn-progress">Progress</button>
@@ -154,16 +195,14 @@ function renderLevelSelect() {
     </div>
   `;
 
-  // Level selection
   screen.querySelector('#seg-level').addEventListener('click', (e) => {
     const btn = e.target.closest('[data-level]');
     if (!btn) return;
-    selectedLevel = parseInt(btn.dataset.level);
+    selectedLevel = parseInt(btn.dataset.level, 10);
 
     screen.querySelectorAll('#seg-level .seg-option').forEach(b => b.classList.remove('seg-option--active'));
     btn.classList.add('seg-option--active');
 
-    // Update morphology enabled state
     const words = getWordsForLevel(currentVocab, selectedLevel);
     const formIdCount = countFormIdEligible(words);
     const morphBtn = screen.querySelector('[data-mode="form-id"]');
@@ -179,19 +218,9 @@ function renderLevelSelect() {
       morphBtn.classList.remove('seg-option--disabled');
     }
 
-    // Update max question count to match level word count
-    const slider = screen.querySelector('#question-count');
-    const maxWords = words.length;
-    slider.max = maxWords;
-    if (parseInt(slider.value) > maxWords) {
-      slider.value = maxWords;
-    }
-    screen.querySelector('#count-display').textContent = slider.value;
-
     updateStartButton();
   });
 
-  // Mode selection
   screen.querySelector('#seg-mode').addEventListener('click', (e) => {
     const btn = e.target.closest('[data-mode]');
     if (!btn || btn.disabled) return;
@@ -203,122 +232,178 @@ function renderLevelSelect() {
     updateStartButton();
   });
 
-  // Question count slider
-  screen.querySelector('#question-count').addEventListener('input', (e) => {
-    screen.querySelector('#count-display').textContent = e.target.value;
-  });
-
   function updateStartButton() {
-    const startBtn = $('#btn-start-quiz');
-    startBtn.disabled = !(selectedLevel && selectedMode);
+    $('#btn-start-quiz').disabled = !(selectedLevel && selectedMode);
   }
 
   $('#btn-start-quiz')?.addEventListener('click', () => {
     if (!selectedLevel || !selectedMode) return;
-    const words = getWordsForLevel(currentVocab, selectedLevel);
-    const count = parseInt(screen.querySelector('#question-count').value);
-    startSession(selectedLevel, words, selectedMode, count);
+    startSession(selectedLevel, selectedMode);
   });
 
   $('#btn-progress')?.addEventListener('click', () => renderProgressDashboard());
   $('#btn-back-home')?.addEventListener('click', () => showScreen('home'));
+  $('#btn-resume-session')?.addEventListener('click', () => {
+    if (!savedSession) return;
+    currentSession = savedSession;
+    renderStudyCard();
+  });
+  $('#btn-discard-session')?.addEventListener('click', () => {
+    clearSavedSession(currentWorkId);
+    renderLevelSelect();
+  });
 
   showScreen('level-select');
+}
+
+function loadSavedSessionForCurrentWork() {
+  const saved = getSavedSession(currentWorkId);
+  if (!saved) return null;
+
+  const restored = restoreSession(saved);
+  if (!restored || restored.ended) {
+    clearSavedSession(currentWorkId);
+    return null;
+  }
+
+  return restored;
+}
+
+function persistCurrentSession() {
+  if (!currentSession) return;
+
+  if (currentSession.ended) {
+    clearSavedSession(currentSession.workId);
+  } else {
+    saveSession(currentSession);
+  }
 }
 
 // ---------------------------------------------------------------------------
 // Start a session
 // ---------------------------------------------------------------------------
 
-function startSession(level, words, mode, count) {
-  if (words.length === 0) {
+function startSession(level, mode) {
+  const levelWords = getWordsForLevel(currentVocab, level);
+  if (levelWords.length === 0) {
     alert('No words available for this level.');
     return;
   }
 
   const allWords = getAllWords(currentVocab);
-  count = count || words.length;
-
-  const questions = generateQuestionSet(words, allWords, {
-    count,
-    mode,
-  });
-
-  if (questions.length === 0) {
-    alert('Could not generate questions for this level.');
+  const seedQuestions = seedQuestionQueue(levelWords, allWords, mode, INITIAL_QUEUE_SIZE);
+  if (seedQuestions.length === 0) {
+    alert('Could not generate study cards for this level.');
     return;
   }
 
   currentSession = createSession({
-    questions,
+    questions: seedQuestions,
     workId: currentWorkId,
     level,
     mode
   });
+  persistCurrentSession();
+  renderStudyCard();
+}
 
-  renderQuizCard();
+function ensureQuestionBuffer(minAhead = MIN_AHEAD_BUFFER) {
+  if (!currentSession || !currentVocab) return;
+
+  const ahead = currentSession.questions.length - currentSession.currentIndex - 1;
+  const needed = minAhead - ahead;
+  if (needed <= 0) return;
+
+  const levelWords = getWordsForLevel(currentVocab, currentSession.level);
+  const allWords = getAllWords(currentVocab);
+  const additions = [];
+  let workingSession = currentSession;
+
+  for (let i = 0; i < needed; i += 1) {
+    const question = generateAdaptiveQuestion(levelWords, allWords, workingSession, currentSession.mode);
+    if (!question) break;
+    additions.push(question);
+    workingSession = appendQuestions(workingSession, [question]);
+  }
+
+  if (additions.length > 0) {
+    currentSession = appendQuestions(currentSession, additions);
+    persistCurrentSession();
+  }
 }
 
 // ---------------------------------------------------------------------------
-// Quiz card rendering
+// Study card rendering
 // ---------------------------------------------------------------------------
 
-function renderQuizCard() {
+function renderStudyCard() {
+  ensureQuestionBuffer();
+
   const question = currentQuestion(currentSession);
   if (!question) {
-    finishSession();
+    renderLevelSelect();
     return;
   }
 
   const screen = $('#quiz');
-  const qNum = currentSession.currentIndex + 1;
-  const qTotal = currentSession.questions.length;
-
-  let typeLabel = '';
-  switch (question.type) {
-    case 'greek-to-english': typeLabel = 'Greek → English'; break;
-    case 'english-to-greek': typeLabel = 'English → Greek'; break;
-    case 'form-id': typeLabel = 'Identify the Form'; break;
-  }
-
-  // Determine if prompt text is Greek (for font styling)
+  const progress = getSessionProgress(currentSession);
+  const answer = getAnswerRecord(currentSession, question.id);
   const promptIsGreek = question.type === 'greek-to-english' || question.type === 'form-id';
 
   screen.innerHTML = `
     <div class="screen-inner">
-    <div class="quiz-header">
-      <span class="quiz-progress">${qNum} / ${qTotal}</span>
-      <span class="quiz-type">${typeLabel}</span>
-      <button class="quiz-quit" id="btn-quit-quiz" title="Quit quiz">&times;</button>
-      <div class="progress-bar quiz-progress-bar">
-        <div class="progress-fill" style="width: ${(qNum / qTotal) * 100}%"></div>
+      <div class="quiz-header">
+        <div class="quiz-header__main">
+          <span class="quiz-progress">Card ${progress.currentNumber}</span>
+          <span class="quiz-type">${escapeHTML(formatQuestionType(question.type))}</span>
+          <span class="quiz-phase">${escapeHTML(LEVEL_NAMES[currentSession.level] || `Level ${currentSession.level}`)}</span>
+        </div>
+        <div class="quiz-header__scoreboard">
+          <span class="score-chip">Seen ${progress.seen}</span>
+          <span class="score-chip">Accuracy ${progress.accuracy}%</span>
+          <span class="score-chip score-chip--secondary">Streak ${progress.streak}</span>
+        </div>
+        <div class="quiz-header__actions">
+          <button class="btn btn-secondary quiz-save" id="btn-save-exit">Save &amp; Exit</button>
+          <button class="btn btn-secondary quiz-save" id="btn-end-session">End Session</button>
+        </div>
       </div>
-    </div>
-    <div class="flip-card" id="flip-card">
-      <div class="flip-card-inner">
-        <div class="flip-card-front card quiz-card">
-          <div class="quiz-prompt">
-            <p class="prompt-text ${promptIsGreek ? 'greek-text' : ''}">${question.prompt.text}</p>
-            ${question.prompt.subtext ? `<p class="prompt-subtext">${question.prompt.subtext}</p>` : ''}
+      <div class="flip-card" id="flip-card">
+        <div class="flip-card-inner">
+          <div class="flip-card-front card quiz-card">
+            <div class="quiz-prompt">
+              <p class="prompt-text ${promptIsGreek ? 'greek-text' : ''}">${escapeHTML(question.prompt.text)}</p>
+              ${question.prompt.subtext ? `<p class="prompt-subtext">${escapeHTML(question.prompt.subtext)}</p>` : ''}
+            </div>
+            <div class="quiz-answer" id="answer-area"></div>
+            <div class="quiz-nav quiz-nav--front" id="front-nav"></div>
           </div>
-          <div class="quiz-answer" id="answer-area"></div>
-        </div>
-        <div class="flip-card-back card quiz-card">
-          <div id="feedback-area"></div>
+          <div class="flip-card-back card quiz-card">
+            <div id="feedback-area"></div>
+          </div>
         </div>
       </div>
-    </div>
     </div>
   `;
 
   renderMultipleChoice(question);
-  $('#btn-quit-quiz')?.addEventListener('click', () => renderLevelSelect());
+  renderFrontNav(Boolean(answer));
+
+  $('#btn-save-exit')?.addEventListener('click', () => {
+    persistCurrentSession();
+    renderLevelSelect();
+  });
+  $('#btn-end-session')?.addEventListener('click', finalizeSessionAndReturn);
+
+  if (answer) {
+    showFeedback(question, answer.userAnswer, answer.correct, { instant: true });
+  }
+
   showScreen('quiz', { replaceState: true });
 }
 
 function renderMultipleChoice(question) {
   const area = $('#answer-area');
-  // Choices are Greek for english-to-greek questions
   const choicesAreGreek = question.type === 'english-to-greek';
   const choicesClass = question.type === 'form-id' ? 'mc-choices mc-choices--morphology' : 'mc-choices';
   area.innerHTML = `
@@ -334,10 +419,25 @@ function renderMultipleChoice(question) {
   area.addEventListener('click', (e) => {
     const btn = e.target.closest('[data-choice]');
     if (!btn || btn.disabled) return;
+    handleAnswer(question, btn.dataset.value);
+  }, { once: true });
+}
 
-    const userAnswer = btn.dataset.value;
-    handleAnswer(question, userAnswer);
+function renderFrontNav(answered) {
+  const nav = $('#front-nav');
+  if (!nav) return;
+
+  nav.innerHTML = `
+    <button class="btn btn-secondary" id="btn-prev-front" ${canGoPrevious(currentSession) ? '' : 'disabled'}>Previous</button>
+    ${answered ? '<button class="btn btn-primary" id="btn-next-front">Next</button>' : ''}
+  `;
+
+  $('#btn-prev-front')?.addEventListener('click', () => {
+    currentSession = goToPreviousQuestion(currentSession);
+    persistCurrentSession();
+    renderStudyCard();
   });
+  $('#btn-next-front')?.addEventListener('click', advanceSession);
 }
 
 // ---------------------------------------------------------------------------
@@ -346,14 +446,10 @@ function renderMultipleChoice(question) {
 
 function handleAnswer(question, userAnswer) {
   const correct = userAnswer === question.correctAnswer;
-
-  // Update progress
   updateProgress(currentWorkId, question.wordId, correct);
 
-  // Record answer in session
-  currentSession = answerQuestion(currentSession, userAnswer, { correct });
-
-  // Show feedback
+  currentSession = answerCurrentQuestion(currentSession, userAnswer, { correct });
+  persistCurrentSession();
   showFeedback(question, userAnswer, correct);
 }
 
@@ -361,13 +457,11 @@ function buildContextHTML(question) {
   const contexts = question.metadata.contexts;
   if (!contexts || contexts.length === 0) return '';
 
-  // Pick context matching the prompt form if possible, else first
   let ctx = contexts[0];
   const promptForm = question.prompt.text;
-  const match = contexts.find(c => c.form === promptForm);
+  const match = contexts.find(candidate => candidate.form === promptForm);
   if (match) ctx = match;
 
-  // Build sentence with highlighted word
   const sentence = ctx.sentence;
   const before = escapeHTML(sentence.slice(0, ctx.highlight_start));
   const highlighted = escapeHTML(sentence.slice(ctx.highlight_start, ctx.highlight_end));
@@ -376,20 +470,17 @@ function buildContextHTML(question) {
   return `
     <div class="word-context">
       <p class="context-greek greek-text">${before}<mark>${highlighted}</mark>${after}</p>
-      ${ctx.translation ? `<p class="context-translation">${highlightTranslation(ctx, question.metadata.context_definition, question.metadata.definition)}</p>` : ''}
+      ${ctx.translation ? `<p class="context-translation">${highlightTranslation(ctx)}</p>` : ''}
       <p class="context-ref">— ${escapeHTML(ctx.ref)}</p>
     </div>
   `;
 }
 
-function showFeedback(question, userAnswer, correct) {
+function showFeedback(question, userAnswer, correct, { instant = false } = {}) {
   const feedback = $('#feedback-area');
 
-  // Disable inputs
-  $$('.btn-choice').forEach(b => b.disabled = true);
-
-  // Highlight correct/incorrect MC choices
   $$('.btn-choice').forEach(btn => {
+    btn.disabled = true;
     if (btn.dataset.value === question.correctAnswer) {
       btn.classList.add('choice-correct');
     } else if (btn.dataset.value === userAnswer && !correct) {
@@ -397,19 +488,16 @@ function showFeedback(question, userAnswer, correct) {
     }
   });
 
-  let feedbackHTML;
-  if (correct) {
-    feedbackHTML = `<div class="feedback-correct"><span>&#10003; Correct!</span></div>`;
-  } else {
-    feedbackHTML = `
+  const message = correct
+    ? `<div class="feedback-correct"><span>&#10003; Correct!</span></div>`
+    : `
       <div class="feedback-incorrect">
         <span>&#10007; The answer is:</span>
         <p class="correct-answer">${escapeHTML(question.correctAnswer)}</p>
       </div>`;
-  }
 
-  // Word details
-  feedbackHTML += `
+  feedback.innerHTML = `
+    ${message}
     <div class="word-details">
       <p>${question.type === 'greek-to-english' ? `<span class="feedback-label">Dictionary form</span> ` : ''}<strong class="greek-text">${escapeHTML(question.metadata.lemma)}</strong> — ${escapeHTML(question.metadata.context_definition || question.metadata.definition)}${question.metadata.context_definition && question.metadata.context_definition !== question.metadata.definition ? ` <span class="text-muted">(LSJ: ${escapeHTML(question.metadata.definition)})</span>` : ''}</p>
       ${question.metadata.etymology ? `<p class="word-etymology">${escapeHTML(question.metadata.etymology)}</p>` : ''}
@@ -424,115 +512,57 @@ function showFeedback(question, userAnswer, correct) {
         </details>
       ` : ''}
     </div>
-  `;
-
-  // Context block
-  feedbackHTML += buildContextHTML(question);
-
-  feedbackHTML += `
+    ${buildContextHTML(question)}
     <div class="feedback-actions">
+      <button class="btn btn-secondary" id="btn-prev-review" ${canGoPrevious(currentSession) ? '' : 'disabled'}>Previous</button>
       <button class="btn btn-primary" id="btn-next">Next</button>
     </div>
   `;
 
-  feedback.innerHTML = feedbackHTML;
-
-  // Trigger flip animation with height management
   const flipCard = $('#flip-card');
   if (flipCard) {
     const inner = flipCard.querySelector('.flip-card-inner');
     const front = flipCard.querySelector('.flip-card-front');
     const back = flipCard.querySelector('.flip-card-back');
 
-    // Lock height to front card's current height before flip
-    inner.style.height = front.offsetHeight + 'px';
-
-    flipCard.classList.add('flipped');
-
-    // After flip animation completes, smoothly transition to back card's height
-    inner.addEventListener('transitionend', function onFlipDone(e) {
-      if (e.propertyName !== 'transform') return;
-      inner.removeEventListener('transitionend', onFlipDone);
+    if (instant) {
+      flipCard.classList.add('flipped');
       inner.style.height = back.offsetHeight + 'px';
-    });
+    } else {
+      inner.style.height = front.offsetHeight + 'px';
+      flipCard.classList.add('flipped');
+      inner.addEventListener('transitionend', function onFlipDone(e) {
+        if (e.propertyName !== 'transform') return;
+        inner.removeEventListener('transitionend', onFlipDone);
+        inner.style.height = back.offsetHeight + 'px';
+      });
+    }
   }
 
-  $('#btn-next')?.addEventListener('click', () => renderQuizCard());
-}
-
-// ---------------------------------------------------------------------------
-// Results screen
-// ---------------------------------------------------------------------------
-
-function finishSession() {
-  const results = getResults(currentSession);
-
-  // Record quiz history
-  recordQuiz(currentWorkId, currentSession.level, results.correct, results.total, currentSession.mode);
-
-  renderResults(results);
-}
-
-function renderResults(results) {
-  const screen = $('#results');
-  const pct = results.score;
-
-  let grade = '';
-  if (pct >= 90) grade = 'Excellent!';
-  else if (pct >= 70) grade = 'Good job!';
-  else if (pct >= 50) grade = 'Keep practicing!';
-  else grade = 'Keep at it!';
-
-  screen.innerHTML = `
-    <div class="screen-inner">
-    <div class="card results-card">
-      <h2>Results</h2>
-      <div class="score-display">
-        <span class="score-number">${results.correct}</span>
-        <span class="score-divider">/</span>
-        <span class="score-total">${results.total}</span>
-      </div>
-      <p class="score-pct">${pct}%</p>
-      <p class="score-grade">${grade}</p>
-      ${results.duration ? `<p class="score-time">${formatDuration(results.duration)}</p>` : ''}
-    </div>
-    <details class="results-details">
-      <summary>Question Review (${results.total} questions)</summary>
-      <ul class="results-list">
-        ${results.details.map((d, i) => {
-          const a = d.answer;
-          const q = d.question;
-          const icon = a?.correct ? '&#10003;' : '&#10007;';
-          const cls = a?.correct ? 'result-correct' : 'result-incorrect';
-          return `
-            <li class="${cls}">
-              <span class="result-icon">${icon}</span>
-              <div class="result-content">
-                <p class="result-prompt">${escapeHTML(q.prompt.text)}</p>
-                <p class="result-answer">Answer: <strong>${escapeHTML(q.correctAnswer)}</strong></p>
-                ${a && !a.correct ? `<p class="result-user">Your answer: ${escapeHTML(a.userAnswer)}</p>` : ''}
-              </div>
-            </li>`;
-        }).join('')}
-      </ul>
-    </details>
-    <div class="action-row">
-      <button class="btn btn-primary" id="btn-retry">Try Again</button>
-      <button class="btn btn-secondary" id="btn-back-to-levels">Back to Levels</button>
-    </div>
-    </div>
-  `;
-
-  $('#btn-retry')?.addEventListener('click', () => {
-    const level = currentSession.level;
-    const mode = currentSession.mode;
-    const words = getWordsForLevel(currentVocab, level);
-    startSession(level, words, mode);
+  $('#btn-prev-review')?.addEventListener('click', () => {
+    currentSession = goToPreviousQuestion(currentSession);
+    persistCurrentSession();
+    renderStudyCard();
   });
+  $('#btn-next')?.addEventListener('click', advanceSession);
+}
 
-  $('#btn-back-to-levels')?.addEventListener('click', () => renderLevelSelect());
+function advanceSession() {
+  currentSession = goToNextQuestion(currentSession);
+  ensureQuestionBuffer();
+  persistCurrentSession();
+  renderStudyCard();
+}
 
-  showScreen('results');
+function finalizeSessionAndReturn() {
+  if (!currentSession) return;
+
+  currentSession = endSession(currentSession);
+  const summary = getStudySummary(currentSession);
+  recordStudySession(currentWorkId, summary, currentSession.level, currentSession.mode);
+  clearSavedSession(currentWorkId);
+  currentSession = null;
+  renderLevelSelect();
 }
 
 // ---------------------------------------------------------------------------
@@ -548,7 +578,7 @@ function renderProgressDashboard() {
   const totalSeen = allWords.filter(w => progress.words[String(w.id)]).length;
 
   let levelsHTML = '';
-  for (let i = 1; i <= 3; i++) {
+  for (let i = 1; i <= 3; i += 1) {
     const stats = getLevelStats(currentWorkId, allWords, i);
     levelsHTML += `
       <div class="progress-level-row">
@@ -563,45 +593,38 @@ function renderProgressDashboard() {
 
   screen.innerHTML = `
     <div class="screen-inner">
-    <div class="card">
-      <h2>Progress — ${currentVocab.metadata.title}</h2>
-      <div class="progress-summary">
-        <div class="stat-box">
-          <span class="stat-number">${totalSeen}</span>
-          <span class="stat-label">Words Seen</span>
-        </div>
-        <div class="stat-box">
-          <span class="stat-number">${totalMastered}</span>
-          <span class="stat-label">Mastered</span>
-        </div>
-        <div class="stat-box">
-          <span class="stat-number">${allWords.length}</span>
-          <span class="stat-label">Total</span>
-        </div>
-      </div>
-    </div>
-    <div class="card">
-      <h3>By Level</h3>
-      ${levelsHTML}
-    </div>
-    ${progress.quizHistory.length > 0 ? `
       <div class="card">
-        <h3>Recent Quizzes</h3>
-        <ul class="quiz-history">
-          ${progress.quizHistory.slice(-10).reverse().map(q => `
-            <li>
-              <span>${LEVEL_NAMES[q.level] || 'Level ' + q.level}</span>
-              ${q.mode ? `<span>${q.mode}</span>` : ''}
-              <span>${q.score}/${q.total}</span>
-              <span>${new Date(q.date).toLocaleDateString()}</span>
-            </li>
-          `).join('')}
-        </ul>
+        <h2>Progress — ${escapeHTML(currentVocab.metadata.title)}</h2>
+        <div class="progress-summary">
+          <div class="stat-box">
+            <span class="stat-number">${totalSeen}</span>
+            <span class="stat-label">Words Seen</span>
+          </div>
+          <div class="stat-box">
+            <span class="stat-number">${totalMastered}</span>
+            <span class="stat-label">Mastered</span>
+          </div>
+          <div class="stat-box">
+            <span class="stat-number">${allWords.length}</span>
+            <span class="stat-label">Total</span>
+          </div>
+        </div>
       </div>
-    ` : ''}
-    <div class="action-row">
-      <button class="btn btn-secondary" id="btn-back-from-progress">Back to Levels</button>
-    </div>
+      <div class="card">
+        <h3>By Level</h3>
+        ${levelsHTML}
+      </div>
+      ${progress.quizHistory.length > 0 ? `
+        <div class="card">
+          <h3>Recent Study Sessions</h3>
+          <ul class="quiz-history quiz-history--study">
+            ${progress.quizHistory.slice(-10).reverse().map(renderHistoryRow).join('')}
+          </ul>
+        </div>
+      ` : ''}
+      <div class="action-row">
+        <button class="btn btn-secondary" id="btn-back-from-progress">Back to Levels</button>
+      </div>
     </div>
   `;
 
@@ -609,11 +632,52 @@ function renderProgressDashboard() {
   showScreen('progress');
 }
 
+function renderHistoryRow(entry) {
+  if (entry.type === 'study-session') {
+    return `
+      <li>
+        <span>${LEVEL_NAMES[entry.level] || `Level ${entry.level}`}</span>
+        <span>${escapeHTML(formatModeLabel(entry.mode))}</span>
+        <span>${entry.correct}/${entry.seen} (${entry.accuracy}%)</span>
+        <span>${new Date(entry.date).toLocaleDateString()}</span>
+      </li>
+    `;
+  }
+
+  return `
+    <li>
+      <span>${LEVEL_NAMES[entry.level] || `Level ${entry.level}`}</span>
+      ${entry.mode ? `<span>${escapeHTML(formatModeLabel(entry.mode))}</span>` : ''}
+      <span>${entry.score}/${entry.total}</span>
+      <span>${new Date(entry.date).toLocaleDateString()}</span>
+    </li>
+  `;
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-function highlightTranslation(ctx, gloss, definition) {
+function formatQuestionType(type) {
+  switch (type) {
+    case 'greek-to-english': return 'Greek → English';
+    case 'english-to-greek': return 'English → Greek';
+    case 'form-id': return 'Identify the Form';
+    default: return type || 'Question';
+  }
+}
+
+function formatModeLabel(mode) {
+  switch (mode) {
+    case 'greek-to-english': return 'Greek → English';
+    case 'english-to-greek': return 'English → Greek';
+    case 'form-id': return 'Morphology';
+    case 'mixed': return 'Mixed';
+    default: return mode || 'Study';
+  }
+}
+
+function highlightTranslation(ctx) {
   const translation = ctx.translation;
   const start = ctx.translation_highlight_start;
   const end = ctx.translation_highlight_end;
@@ -636,20 +700,17 @@ function highlightTranslation(ctx, gloss, definition) {
 
 function escapeHTML(str) {
   const div = document.createElement('div');
-  div.textContent = str;
+  div.textContent = str ?? '';
   return div.innerHTML;
 }
 
 function escapeAttr(str) {
-  return str.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/'/g, '&#39;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-}
-
-function formatDuration(ms) {
-  const secs = Math.floor(ms / 1000);
-  const mins = Math.floor(secs / 60);
-  const remSecs = secs % 60;
-  if (mins === 0) return `${remSecs}s`;
-  return `${mins}m ${remSecs}s`;
+  return String(str ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
 }
 
 export { showScreen, selectWork, renderLevelSelect };
