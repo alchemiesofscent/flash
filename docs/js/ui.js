@@ -631,57 +631,6 @@ function highlightTranslation(ctx, gloss, definition) {
     return `${before}<mark>${highlight}</mark>${after}`;
   }
 
-  return highlightGlossInTranslation(translation, gloss || definition);
-}
-
-function highlightGlossInTranslation(translation, gloss) {
-  if (!gloss) return escapeHTML(translation);
-  // Split gloss into candidate words/phrases (comma or semicolon separated), filter short ones
-  const candidates = gloss.split(/[,;]/)
-    .map(s => s.trim().toLowerCase())
-    .filter(s => s.length >= 3);
-  if (candidates.length === 0) return escapeHTML(translation);
-
-  // Sort longest first so we match the most specific phrase
-  candidates.sort((a, b) => b.length - a.length);
-
-  // Try to find the first candidate that appears as a whole word in the translation
-  for (const candidate of candidates) {
-    // Try exact match first, then with common suffixes
-    const escaped = candidate.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const re = new RegExp(`\\b(${escaped}(?:s|ed|ing|es|d)?)\\b`, 'i');
-    const m = translation.match(re);
-    if (m) {
-      const idx = m.index;
-      const matched = m[0];
-      const before = escapeHTML(translation.slice(0, idx));
-      const highlight = escapeHTML(matched);
-      const after = escapeHTML(translation.slice(idx + matched.length));
-      return `${before}<mark>${highlight}</mark>${after}`;
-    }
-  }
-
-  // Second pass: for single-word candidates, try stem-based prefix matching
-  for (const candidate of candidates) {
-    if (candidate.includes(' ')) continue;
-    // Try progressively shorter stems (minimum 3 chars)
-    const stems = [candidate, candidate.replace(/[ey]$/, ''), candidate.replace(/[eying]+$/, '')];
-    for (const stem of stems) {
-      if (stem.length < 3) continue;
-      const escaped = stem.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      const re = new RegExp(`\\b(${escaped}\\w*)\\b`, 'i');
-      const m = translation.match(re);
-      if (m) {
-        const idx = m.index;
-        const matched = m[0];
-        const before = escapeHTML(translation.slice(0, idx));
-        const highlight = escapeHTML(matched);
-        const after = escapeHTML(translation.slice(idx + matched.length));
-        return `${before}<mark>${highlight}</mark>${after}`;
-      }
-    }
-  }
-
   return escapeHTML(translation);
 }
 

@@ -10,6 +10,8 @@ import json
 import os
 import sys
 
+from translation_highlights import ALLOWED_CONFIDENCES, ALLOWED_METHODS
+
 
 def error(msg):
     print(f"  FAIL: {msg}")
@@ -306,23 +308,52 @@ def validate_file(filepath):
                     enrichment_errors += 1
                 else:
                     contexts_with_translation += 1
+                    method = ctx.get("translation_highlight_method")
+                    confidence = ctx.get("translation_highlight_confidence")
+                    if method not in ALLOWED_METHODS:
+                        failures.append(
+                            error(
+                                f"{prefix}.contexts[{j}].translation_highlight_method must be one of "
+                                f"{sorted(ALLOWED_METHODS)}"
+                            )
+                        )
+                        enrichment_errors += 1
+                        continue
+                    if confidence not in ALLOWED_CONFIDENCES:
+                        failures.append(
+                            error(
+                                f"{prefix}.contexts[{j}].translation_highlight_confidence must be one of "
+                                f"{sorted(ALLOWED_CONFIDENCES)}"
+                            )
+                        )
+                        enrichment_errors += 1
+                        continue
                     ths = ctx.get("translation_highlight_start")
                     the = ctx.get("translation_highlight_end")
-                    if not isinstance(ths, int) or not isinstance(the, int):
-                        failures.append(
-                            error(
-                                f"{prefix}.contexts[{j}].translation_highlight_start/end must be ints"
+                    if method == "none":
+                        if ths is not None or the is not None:
+                            failures.append(
+                                error(
+                                    f"{prefix}.contexts[{j}] has translation_highlight_method='none' but still stores bounds"
+                                )
                             )
-                        )
-                        enrichment_errors += 1
-                    elif ths < 0 or the > len(translation) or ths >= the:
-                        failures.append(
-                            error(
-                                f"{prefix}.contexts[{j}].translation highlight bounds out of range "
-                                f"(start={ths}, end={the}, translation_len={len(translation)})"
+                            enrichment_errors += 1
+                    else:
+                        if not isinstance(ths, int) or not isinstance(the, int):
+                            failures.append(
+                                error(
+                                    f"{prefix}.contexts[{j}].translation_highlight_start/end must be ints"
+                                )
                             )
-                        )
-                        enrichment_errors += 1
+                            enrichment_errors += 1
+                        elif ths < 0 or the > len(translation) or ths >= the:
+                            failures.append(
+                                error(
+                                    f"{prefix}.contexts[{j}].translation highlight bounds out of range "
+                                    f"(start={ths}, end={the}, translation_len={len(translation)})"
+                                )
+                            )
+                            enrichment_errors += 1
 
     # --- Morphology stats ---
     words_with_detailed_morph = 0

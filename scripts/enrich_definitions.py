@@ -25,7 +25,12 @@ import time
 from copy import deepcopy
 from pathlib import Path
 
-from translation_highlights import apply_translation_highlights_to_word
+from translation_highlights import (
+    MODEL_ALIGN_BATCH_SIZE,
+    MODEL_ALIGN_MODEL,
+    align_translation_highlights_for_words,
+    apply_translation_highlights_to_word,
+)
 
 try:
     import anthropic
@@ -405,7 +410,15 @@ def validate_enrichments(batch, enrichments):
         raise ValueError("Invalid enrichment response: " + "; ".join(parts))
 
 
-def apply_enrichments(batch, enrichments, morph_only=False, etymology_only=False):
+def apply_enrichments(
+    batch,
+    enrichments,
+    morph_only=False,
+    etymology_only=False,
+    alignment_client=None,
+    alignment_model=MODEL_ALIGN_MODEL,
+    alignment_batch_size=MODEL_ALIGN_BATCH_SIZE,
+):
     """Apply enrichment data back to the word objects."""
     lookup = {entry["lemma"]: entry for entry in enrichments}
     applied = 0
@@ -451,6 +464,14 @@ def apply_enrichments(batch, enrichments, morph_only=False, etymology_only=False
                     form["morphology"] = new_morph
 
         applied += 1
+
+    if not morph_only and not etymology_only and alignment_client is not None:
+        align_translation_highlights_for_words(
+            batch,
+            alignment_client,
+            model=alignment_model,
+            batch_size=alignment_batch_size,
+        )
 
     return applied
 
@@ -731,6 +752,8 @@ def main():
                     enrichments,
                     morph_only=args.morph_only,
                     etymology_only=args.etymology_only,
+                    alignment_client=client,
+                    alignment_model=MODEL,
                 )
                 enriched_count += applied
                 print(f"  Enriched {applied}/{len(batch)} words")
@@ -752,6 +775,8 @@ def main():
                                 enrichments,
                                 morph_only=args.morph_only,
                                 etymology_only=args.etymology_only,
+                                alignment_client=client,
+                                alignment_model=MODEL,
                             )
                             enriched_count += applied
                     except (json.JSONDecodeError, ValueError) + api_error_types as e2:
