@@ -33,6 +33,16 @@ WORK_METADATA_OVERRIDES = {
     },
 }
 
+FORM_ANALYSIS_OVERRIDES = {
+    "tlg0086035": {
+        "εὕροι": {
+            "lemma": "εὑρίσκω",
+            "pos": "VERB",
+            "morphology": "verb, perfective, optative, singular, third, past, finite, active",
+        },
+    },
+}
+
 CLTK_CACHE_DIR = Path(__file__).resolve().parent.parent / "data" / "cache" / "cltk_data"
 LEGACY_CLTK_DATA_DIR = Path.home() / "cltk_data"
 
@@ -273,6 +283,21 @@ def lemmatize_tokens(tokens: list[str], batch_size: int = 2000) -> list[dict]:
             })
 
     return results
+
+
+def apply_form_analysis_overrides(analyzed: list[dict], work_id: str) -> int:
+    """Apply narrow per-work fixes for known CLTK mislemmatizations."""
+    overrides = FORM_ANALYSIS_OVERRIDES.get(work_id, {})
+    applied = 0
+
+    for entry in analyzed:
+        override = overrides.get(entry["form"])
+        if not override:
+            continue
+        entry.update(override)
+        applied += 1
+
+    return applied
 
 
 # ---------------------------------------------------------------------------
@@ -580,6 +605,9 @@ def main():
     print("Lemmatizing with CLTK (this may take a moment on first run)...")
     analyzed = lemmatize_tokens(tokens)
     print(f"  Analyzed {len(analyzed)} tokens")
+    override_count = apply_form_analysis_overrides(analyzed, work_id)
+    if override_count:
+        print(f"  Applied {override_count} form analysis override(s)")
 
     # Group by lemma
     lemma_data = defaultdict(lambda: {"frequency": 0, "forms": {}, "pos": ""})
