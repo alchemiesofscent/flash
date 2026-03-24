@@ -9,6 +9,19 @@ function instantiateQuestions(questions, startIndex = 0) {
   }));
 }
 
+function cloneQuestion(question) {
+  return {
+    ...question,
+    prompt: question.prompt ? { ...question.prompt } : question.prompt,
+    choices: Array.isArray(question.choices) ? [...question.choices] : [],
+    metadata: question.metadata ? {
+      ...question.metadata,
+      forms: Array.isArray(question.metadata.forms) ? [...question.metadata.forms] : [],
+      contexts: Array.isArray(question.metadata.contexts) ? [...question.metadata.contexts] : [],
+    } : question.metadata,
+  };
+}
+
 function initialWordState(wordId) {
   return {
     wordId,
@@ -39,11 +52,12 @@ export function createSession(config) {
   const now = Date.now();
 
   return {
-    version: 2,
+    version: 3,
     id: config.id || `${config.workId}-${now}`,
     workId: config.workId,
     level: config.level,
     mode: config.mode,
+    kind: config.kind || 'study',
     questions,
     currentIndex: 0,
     nextQuestionOrdinal: questions.length,
@@ -57,6 +71,10 @@ export function createSession(config) {
     },
     wordStats: {},
     recentWordIds: [],
+    reviewSourceQuestionIds: Array.isArray(config.reviewSourceQuestionIds)
+      ? [...config.reviewSourceQuestionIds]
+      : [],
+    returnToSession: config.returnToSession || null,
     startTime: now,
     updatedAt: now,
     endedAt: null,
@@ -79,11 +97,12 @@ export function restoreSession(savedSession) {
     : 0;
 
   return {
-    version: 2,
+    version: 3,
     id: savedSession.id || `${savedSession.workId || 'session'}-${savedSession.startTime || Date.now()}`,
     workId: savedSession.workId,
     level: savedSession.level,
     mode: savedSession.mode,
+    kind: savedSession.kind || 'study',
     questions,
     currentIndex,
     nextQuestionOrdinal: Number.isInteger(savedSession.nextQuestionOrdinal)
@@ -105,6 +124,12 @@ export function restoreSession(savedSession) {
     recentWordIds: Array.isArray(savedSession.recentWordIds)
       ? trimRecentWordIds(savedSession.recentWordIds)
       : [],
+    reviewSourceQuestionIds: Array.isArray(savedSession.reviewSourceQuestionIds)
+      ? [...savedSession.reviewSourceQuestionIds]
+      : [],
+    returnToSession: savedSession.returnToSession
+      ? restoreSession(savedSession.returnToSession)
+      : null,
     startTime: savedSession.startTime || Date.now(),
     updatedAt: savedSession.updatedAt || savedSession.startTime || Date.now(),
     endedAt: savedSession.endedAt || null,
@@ -256,6 +281,64 @@ export function getSessionProgress(session) {
     bestStreak: session.stats.bestStreak,
     currentNumber: session.currentIndex + 1,
     loadedCount: session.questions.length,
+  };
+}
+
+export function getIncorrectQuestionIds(session) {
+  return Object.values(session?.answersById || {})
+    .filter((answer) => answer && answer.correct === false)
+    .sort((left, right) => left.questionIndex - right.questionIndex)
+    .map((answer) => answer.questionId);
+}
+
+export function hasReviewableMistakes(session) {
+  return getIncorrectQuestionIds(session).length > 0;
+}
+
+export function createReviewSession(studySession, sourceQuestionIds = null) {
+  if (!studySession || studySession.kind === 'review') {
+    return null;
+  }
+
+  const reviewSourceQuestionIds = Array.isArray(sourceQuestionIds) && sourceQuestionIds.length > 0
+    ? [...sourceQuestionIds]
+    : getIncorrectQuestionIds(studySession);
+  if (reviewSourceQuestionIds.length === 0) {
+    return null;
+  }
+
+  const questionsById = new Map(
+    studySession.questions.map((question) => [question.id, question])
+  );
+  const reviewQuestions = reviewSourceQuestionIds
+    .map((questionId) => questionsById.get(questionId))
+    .filter(Boolean)
+    .map(cloneQuestion);
+
+  if (reviewQuestions.length === 0) {
+    return null;
+  }
+
+  return createSession({
+    id: `${studySession.workId}-review-${Date.now()}`,
+    workId: studySession.workId,
+    level: studySession.level,
+    mode: studySession.mode,
+    kind: 'review',
+    questions: reviewQuestions,
+    reviewSourceQuestionIds,
+    returnToSession: studySession,
+  });
+}
+
+export function restoreParentSession(reviewSession) {
+  if (!reviewSession?.returnToSession) {
+    return reviewSession;
+  }
+
+  return {
+    ...reviewSession.returnToSession,
+    updatedAt: Date.now(),
   };
 }
 

@@ -15,7 +15,9 @@ import { fetchVocab, getWordsForLevel, getAllWords } from './data.js';
 import { seedQuestionQueue, generateAdaptiveQuestion, countFormIdEligible } from './questions.js';
 import {
   createSession,
+  createReviewSession,
   restoreSession,
+  restoreParentSession,
   currentQuestion,
   getAnswerRecord,
   answerCurrentQuestion,
@@ -23,7 +25,8 @@ import {
   goToPreviousQuestion,
   goToNextQuestion,
   canGoPrevious,
-  getSessionProgress
+  getSessionProgress,
+  hasReviewableMistakes
 } from './state.js';
 import { renderPwaHomePrompt } from './pwa.js';
 
@@ -130,6 +133,10 @@ function renderLevelSelect() {
   const savedSession = loadSavedSessionForCurrentWork();
   const savedProgress = savedSession ? getSessionProgress(savedSession) : null;
   const startButtonLabel = savedSession ? 'Start New Study Session' : 'Start Studying';
+  const savedSessionTitle = savedSession?.kind === 'review' ? 'Saved Review Session' : 'Saved Study Session';
+  const savedSessionNote = savedSession?.kind === 'review'
+    ? 'Resuming will return to your wrong-answer review round first.'
+    : 'Starting a new session replaces this saved stream.';
 
   screen.innerHTML = `
     <div class="screen-inner setup-form">
@@ -140,7 +147,7 @@ function renderLevelSelect() {
 
       ${savedSession ? `
         <div class="card session-resume-card">
-          <h3>Saved Study Session</h3>
+          <h3>${savedSessionTitle}</h3>
           <p class="session-resume-card__meta">${escapeHTML(LEVEL_NAMES[savedSession.level] || `Level ${savedSession.level}`)} &middot; ${escapeHTML(formatModeLabel(savedSession.mode))}</p>
           <div class="session-resume-card__stats">
             <span>Seen ${savedProgress.seen}</span>
@@ -151,7 +158,7 @@ function renderLevelSelect() {
             <button class="btn btn-primary" id="btn-resume-session">Resume Session</button>
             <button class="btn btn-secondary" id="btn-discard-session">Discard Saved</button>
           </div>
-          <p class="session-resume-card__note">Starting a new session replaces this saved stream.</p>
+          <p class="session-resume-card__note">${savedSessionNote}</p>
         </div>
       ` : ''}
 
@@ -293,11 +300,28 @@ function cleanupStudyMenuListeners() {
 function restartCurrentSession() {
   if (!currentSession) return;
 
-  const { level, mode } = currentSession;
-  const confirmed = window.confirm('Restart this study session? Current progress in this session will be lost.');
+  const isReview = currentSession.kind === 'review';
+  const confirmed = window.confirm(
+    isReview
+      ? 'Restart this review round? Current review progress will be lost.'
+      : 'Restart this study session? Current progress in this session will be lost.'
+  );
   if (!confirmed) return;
 
   cleanupStudyMenuListeners();
+  if (isReview) {
+    const restartedReview = createReviewSession(
+      currentSession.returnToSession,
+      currentSession.reviewSourceQuestionIds
+    );
+    if (!restartedReview) return;
+    currentSession = restartedReview;
+    persistCurrentSession();
+    renderStudyCard();
+    return;
+  }
+
+  const { level, mode } = currentSession;
   clearSavedSession(currentWorkId);
   currentSession = null;
   startSession(level, mode);
@@ -306,6 +330,20 @@ function restartCurrentSession() {
 function renderGlobalStudyMenu() {
   const navLinks = $('#nav-links');
   if (!navLinks || !currentSession) return;
+  const reviewAvailable = currentSession.kind === 'study' && hasReviewableMistakes(currentSession);
+  const reviewButton = currentSession.kind === 'study'
+    ? `
+      <button
+        class="quiz-menu__item"
+        id="btn-start-review"
+        type="button"
+        ${reviewAvailable ? '' : 'disabled'}
+        ${reviewAvailable ? '' : 'title="No incorrect answers yet"'}
+      >
+        Review
+      </button>
+    `
+    : '';
 
   navLinks.innerHTML = `
     <div class="header-session-menu">
@@ -322,6 +360,7 @@ function renderGlobalStudyMenu() {
         <span></span>
       </button>
       <div class="quiz-menu" id="session-menu" hidden>
+        ${reviewButton}
         <button class="quiz-menu__item" id="btn-save-quit" type="button">Save &amp; Quit</button>
         <button class="quiz-menu__item" id="btn-restart-session" type="button">Restart</button>
       </div>
@@ -358,7 +397,7 @@ function startSession(level, mode) {
 }
 
 function ensureQuestionBuffer(minAhead = MIN_AHEAD_BUFFER) {
-  if (!currentSession || !currentVocab) return;
+  if (!currentSession || !currentVocab || currentSession.kind !== 'study') return;
 
   const ahead = currentSession.questions.length - currentSession.currentIndex - 1;
   const needed = minAhead - ahead;
@@ -407,6 +446,7 @@ function renderStudyCard() {
         <div class="quiz-header__main">
           <span class="quiz-progress">Card ${progress.currentNumber}</span>
           <span class="quiz-type">${escapeHTML(formatQuestionType(question.type))}</span>
+          ${currentSession.kind === 'review' ? '<span class="quiz-phase quiz-phase--review">Review</span>' : ''}
           <span class="quiz-phase">${escapeHTML(LEVEL_NAMES[currentSession.level] || `Level ${currentSession.level}`)}</span>
         </div>
         <div class="quiz-header__scoreboard">
@@ -495,6 +535,11 @@ function setupStudyHeaderMenu() {
     renderLevelSelect();
   }, { signal });
 
+  $('#btn-start-review')?.addEventListener('click', () => {
+    closeMenu();
+    startReviewRound();
+  }, { signal });
+
   $('#btn-restart-session')?.addEventListener('click', () => {
     closeMenu();
     restartCurrentSession();
@@ -545,11 +590,24 @@ function renderFrontNav(answered) {
 
 function handleAnswer(question, userAnswer) {
   const correct = userAnswer === question.correctAnswer;
-  updateProgress(currentWorkId, question.wordId, correct);
+  if (currentSession.kind !== 'review') {
+    updateProgress(currentWorkId, question.wordId, correct);
+  }
 
   currentSession = answerCurrentQuestion(currentSession, userAnswer, { correct });
   persistCurrentSession();
   showFeedback(question, userAnswer, correct);
+}
+
+function startReviewRound() {
+  if (!currentSession || currentSession.kind !== 'study') return;
+
+  const reviewSession = createReviewSession(currentSession);
+  if (!reviewSession) return;
+
+  currentSession = reviewSession;
+  persistCurrentSession();
+  renderStudyCard();
 }
 
 function buildContextHTML(question) {
@@ -647,6 +705,20 @@ function showFeedback(question, userAnswer, correct, { instant = false } = {}) {
 }
 
 function advanceSession() {
+  if (!currentSession) return;
+
+  const isLastQuestion = currentSession.currentIndex >= currentSession.questions.length - 1;
+  if (currentSession.kind === 'review' && isLastQuestion) {
+    currentSession = restoreParentSession(currentSession);
+    persistCurrentSession();
+    renderStudyCard();
+    return;
+  }
+
+  if (currentSession.kind === 'study' && isLastQuestion) {
+    ensureQuestionBuffer();
+  }
+
   currentSession = goToNextQuestion(currentSession);
   ensureQuestionBuffer();
   persistCurrentSession();

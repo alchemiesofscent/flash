@@ -1511,6 +1511,11 @@ header h1 {
   color: var(--color-correct-hover);
 }
 
+.quiz-phase--review {
+  background-color: var(--color-primary);
+  color: var(--color-primary-text);
+}
+
 .score-chip {
   display: inline-flex;
   align-items: center;
@@ -1591,6 +1596,16 @@ header h1 {
 .quiz-menu__item:hover,
 .quiz-menu__item:focus-visible {
   background-color: var(--color-border-light);
+}
+
+.quiz-menu__item:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.quiz-menu__item:disabled:hover,
+.quiz-menu__item:disabled:focus-visible {
+  background: none;
 }
 
 .quiz-quit {
