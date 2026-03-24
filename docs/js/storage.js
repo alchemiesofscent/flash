@@ -4,7 +4,8 @@ const PROGRESS_PREFIX = 'flash_progress_';
 const SETTINGS_KEY = 'flash_settings';
 
 const DEFAULT_SETTINGS = {
-  lastWorkId: null
+  lastWorkId: null,
+  pwaInstallPromptDismissed: false
 };
 
 /**

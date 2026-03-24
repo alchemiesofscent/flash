@@ -1,12 +1,15 @@
 {
+  "id": "./",
   "name": "Flash — Greek Vocabulary",
   "short_name": "Flash",
   "description": "Flashcard game for learning Ancient Greek vocabulary",
   "start_url": "./#home",
   "scope": "./",
   "display": "standalone",
+  "orientation": "portrait-primary",
   "theme_color": "#b35a2a",
   "background_color": "#f7f3ec",
+  "categories": ["education", "books", "reference"],
   "icons": [
     {
       "src": "icons/icon-192.png",

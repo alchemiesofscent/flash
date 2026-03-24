@@ -9,6 +9,7 @@ Usage:
 """
 
 import argparse
+import bisect
 import json
 import os
 import re
@@ -24,6 +25,40 @@ from lxml import etree
 # ---------------------------------------------------------------------------
 
 TEI_NS = "http://www.tei-c.org/ns/1.0"
+
+WORK_METADATA_OVERRIDES = {
+    "tlg0086035": {
+        "title": "Politics",
+        "author": "Aristotle",
+    },
+}
+
+CLTK_CACHE_DIR = Path(__file__).resolve().parent.parent / "data" / "cache" / "cltk_data"
+LEGACY_CLTK_DATA_DIR = Path.home() / "cltk_data"
+
+
+def ensure_cltk_data_dir() -> Path:
+    """Point CLTK at a writable data directory inside the repo.
+
+    CLTK writes a log file at import time and reads Greek embeddings from
+    ``$CLTK_DATA/grc/embeddings`` during analysis. In this sandbox we cannot
+    write to ``~/cltk_data``, so default to a repo-local cache directory and
+    reuse any existing home-level Greek embeddings via symlink.
+    """
+    configured = Path(os.environ["CLTK_DATA"]).expanduser() if os.environ.get("CLTK_DATA") else CLTK_CACHE_DIR
+    configured.mkdir(parents=True, exist_ok=True)
+
+    source_embeddings = LEGACY_CLTK_DATA_DIR / "grc" / "embeddings"
+    target_embeddings = configured / "grc" / "embeddings"
+    if source_embeddings.exists() and not target_embeddings.exists():
+        target_embeddings.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            target_embeddings.symlink_to(source_embeddings, target_is_directory=True)
+        except FileExistsError:
+            pass
+
+    os.environ["CLTK_DATA"] = str(configured)
+    return configured
 
 
 def detect_reference_system(body) -> str:
@@ -143,6 +178,14 @@ def parse_tei(xml_path: str) -> tuple[str, str, str]:
     return result["title"], result["author"], text
 
 
+def normalize_metadata(work_id: str, title: str, author: str) -> tuple[str, str]:
+    """Apply narrow per-work metadata overrides for app display."""
+    override = WORK_METADATA_OVERRIDES.get(work_id)
+    if not override:
+        return title, author
+    return override.get("title", title), override.get("author", author)
+
+
 def _extract_text(element) -> str:
     """Recursively extract text from an element, skipping <label> and <pb/> tags."""
     parts = []
@@ -173,7 +216,7 @@ def tokenize(text: str) -> list[str]:
     """Tokenize Greek text: split on whitespace, strip punctuation, normalize Unicode."""
     text = unicodedata.normalize("NFC", text)
     # Remove bracketed editorial marks like [ἡμέρᾳ]
-    text = re.sub(r"[[\]]", "", text)
+    text = re.sub(r"[\[\]]", "", text)
     # Remove quoted markers
     text = text.replace('"', "").replace('"', "").replace('"', "")
 
@@ -193,42 +236,41 @@ def tokenize(text: str) -> list[str]:
 # ---------------------------------------------------------------------------
 
 
-def lemmatize_tokens(tokens: list[str]) -> list[dict]:
+def lemmatize_tokens(tokens: list[str], batch_size: int = 2000) -> list[dict]:
     """Use CLTK to lemmatize and POS-tag Greek tokens.
 
     Returns a list of dicts with keys: form, lemma, pos, morphology.
     """
+    ensure_cltk_data_dir()
     from cltk import NLP
 
     nlp = NLP(language="grc", suppress_banner=True)
-    # Process as a single string for context
-    text = " ".join(tokens)
-    doc = nlp(text)
-
     results = []
-    for word in doc.words:
-        form = unicodedata.normalize("NFC", word.string.lower())
-        lemma = unicodedata.normalize("NFC", (word.lemma or form).lower())
-        pos = word.upos or ""
-        # Build morphology string from features
-        morph_parts = []
-        if pos:
-            morph_parts.append(pos.lower())
-        if word.features and hasattr(word.features, 'items'):
-            for feat_name, feat_vals in sorted(word.features.items()):
-                if isinstance(feat_vals, (list, tuple)):
-                    morph_parts.extend(str(v) for v in feat_vals)
-                else:
-                    morph_parts.append(str(feat_vals))
-        elif word.features and isinstance(word.features, str):
-            morph_parts.append(word.features)
+    for start in range(0, len(tokens), batch_size):
+        batch_tokens = tokens[start:start + batch_size]
+        doc = nlp(" ".join(batch_tokens))
+        for word in doc.words:
+            form = unicodedata.normalize("NFC", word.string.lower())
+            lemma = unicodedata.normalize("NFC", (word.lemma or form).lower())
+            pos = word.upos or ""
+            morph_parts = []
+            if pos:
+                morph_parts.append(pos.lower())
+            if word.features and hasattr(word.features, "items"):
+                for feat_name, feat_vals in word.features.items():
+                    if isinstance(feat_vals, (list, tuple)):
+                        morph_parts.extend(str(v) for v in feat_vals)
+                    else:
+                        morph_parts.append(str(feat_vals))
+            elif word.features and isinstance(word.features, str):
+                morph_parts.append(word.features)
 
-        results.append({
-            "form": form,
-            "lemma": lemma,
-            "pos": pos,
-            "morphology": ", ".join(morph_parts) if morph_parts else "",
-        })
+            results.append({
+                "form": form,
+                "lemma": lemma,
+                "pos": pos,
+                "morphology": ", ".join(morph_parts) if morph_parts else "",
+            })
 
     return results
 
@@ -305,6 +347,7 @@ def lookup_definitions(lemmas: list[str], lexicon_path: str) -> dict:
 
     definitions = data["definitions"]
     stripped_index = data["stripped_index"]
+    definition_keys = sorted(definitions)
 
     results = {}
     matched = 0
@@ -329,7 +372,9 @@ def lookup_definitions(lemmas: list[str], lexicon_path: str) -> dict:
         found = False
         for prefix_len in range(len(normalized), 3, -1):
             prefix = normalized[:prefix_len]
-            for key in definitions:
+            idx = bisect.bisect_left(definition_keys, prefix)
+            if idx < len(definition_keys):
+                key = definition_keys[idx]
                 if key.startswith(prefix):
                     results[lemma] = definitions[key]
                     matched += 1
@@ -367,43 +412,35 @@ def extract_contexts(lemma_data: dict, sections: list, max_contexts: int = 3) ->
     Returns { lemma: [ { ref, form, sentence, highlight_start, highlight_end } ] }
     """
     contexts = defaultdict(list)
+    seen_refs = defaultdict(set)
+    seen_forms = defaultdict(set)
+    form_to_lemmas = defaultdict(list)
 
-    # Build an index of all forms per lemma for fast lookup
-    lemma_forms = {}
     for lemma, data in lemma_data.items():
-        lemma_forms[lemma] = set(data["forms"].keys())
+        for form in data["forms"]:
+            form_to_lemmas[form].append(lemma)
 
-    for lemma, forms_set in lemma_forms.items():
-        if len(contexts[lemma]) >= max_contexts:
-            continue
+    for section in sections:
+        for sentence in section["sentences"]:
+            sentence_nfc = unicodedata.normalize("NFC", sentence)
+            sentence_lower = sentence_nfc.lower()
+            sentence_tokens = []
+            for token in tokenize(sentence_nfc):
+                if token not in sentence_tokens:
+                    sentence_tokens.append(token)
 
-        seen_refs = set()
-        seen_forms = set()
-
-        for section in sections:
-            if len(contexts[lemma]) >= max_contexts:
-                break
-            for sentence in section["sentences"]:
-                if len(contexts[lemma]) >= max_contexts:
-                    break
-                # Normalize for comparison
-                sentence_nfc = unicodedata.normalize("NFC", sentence)
-                for form in forms_set:
-                    if form in seen_forms and len(contexts[lemma]) > 0:
-                        # Prefer different forms; skip if we already have this form
-                        # unless we have no contexts yet
-                        if section["ref"] in seen_refs:
-                            continue
-                    form_nfc = unicodedata.normalize("NFC", form)
-                    # Case-insensitive search in the sentence
-                    sentence_lower = sentence_nfc.lower()
-                    form_lower = form_nfc.lower()
-                    idx = sentence_lower.find(form_lower)
-                    if idx == -1:
+            for form in sentence_tokens:
+                for lemma in form_to_lemmas.get(form, []):
+                    if len(contexts[lemma]) >= max_contexts:
+                        continue
+                    if section["ref"] in seen_refs[lemma] and len(contexts[lemma]) > 0:
+                        continue
+                    if form in seen_forms[lemma] and len(contexts[lemma]) > 0:
                         continue
 
-                    # Prefer different sections
-                    if section["ref"] in seen_refs and len(contexts[lemma]) > 0:
+                    form_nfc = unicodedata.normalize("NFC", form)
+                    idx = sentence_lower.find(form_nfc.lower())
+                    if idx == -1:
                         continue
 
                     contexts[lemma].append({
@@ -413,11 +450,10 @@ def extract_contexts(lemma_data: dict, sections: list, max_contexts: int = 3) ->
                         "highlight_start": idx,
                         "highlight_end": idx + len(form_nfc),
                     })
-                    seen_refs.add(section["ref"])
-                    seen_forms.add(form)
-                    break  # One match per sentence is enough
+                    seen_refs[lemma].add(section["ref"])
+                    seen_forms[lemma].add(form)
 
-    return dict(contexts)
+    return {lemma: items for lemma, items in contexts.items() if items}
 
 
 def build_vocab_json(
@@ -528,6 +564,7 @@ def main():
     title, author = parsed["title"], parsed["author"]
     reference_system = parsed["reference_system"]
     sections = parsed["sections"]
+    title, author = normalize_metadata(work_id, title, author)
     print(f"  Title: {title}, Author: {author}")
     print(f"  Reference system: {reference_system}")
     print(f"  Sections: {len(sections)}")
@@ -538,6 +575,8 @@ def main():
     print(f"  Tokens: {len(tokens)}")
 
     # Step 1b: Lemmatize
+    cltk_data_dir = ensure_cltk_data_dir()
+    print(f"  CLTK data dir: {cltk_data_dir}")
     print("Lemmatizing with CLTK (this may take a moment on first run)...")
     analyzed = lemmatize_tokens(tokens)
     print(f"  Analyzed {len(analyzed)} tokens")

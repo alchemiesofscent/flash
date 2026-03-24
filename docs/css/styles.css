@@ -125,6 +125,10 @@ body {
   padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
 }
 
+body.app-standalone {
+  min-height: 100dvh;
+}
+
 img, svg {
   display: block;
   max-width: 100%;
@@ -1281,6 +1285,11 @@ header h1 {
     justify-content: center;
   }
 
+  .pwa-install-card__actions {
+    flex-direction: row;
+    justify-content: flex-start;
+  }
+
   /* Buttons */
   .btn--lg {
     font-size: var(--font-size-xl);
@@ -1627,6 +1636,65 @@ header h1 {
 .subtitle {
   color: var(--color-text-muted);
   margin-top: var(--space-2);
+}
+
+.pwa-install-card {
+  margin-top: var(--space-4);
+  text-align: left;
+}
+
+.pwa-install-card h3 {
+  margin-bottom: var(--space-2);
+}
+
+.pwa-install-card p {
+  color: var(--color-text-muted);
+}
+
+.pwa-install-card__actions {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  margin-top: var(--space-4);
+}
+
+#pwa-status-region {
+  position: fixed;
+  left: var(--space-4);
+  right: var(--space-4);
+  bottom: calc(env(safe-area-inset-bottom) + var(--space-4));
+  z-index: 250;
+  pointer-events: none;
+}
+
+.pwa-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  max-width: var(--card-max-width);
+  margin: 0 auto;
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
+  background-color: var(--color-surface);
+  pointer-events: auto;
+}
+
+.pwa-banner p {
+  margin: 0;
+  color: var(--color-text);
+}
+
+.pwa-banner--offline {
+  background-color: var(--color-border-light);
+}
+
+.pwa-banner__actions {
+  display: flex;
+  gap: var(--space-2);
+  flex-shrink: 0;
 }
 
 /* Level select */

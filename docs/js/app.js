@@ -3,6 +3,7 @@
 import { fetchWorks } from './data.js';
 import { renderHome, showScreen, selectWork } from './ui.js';
 import { getSettings } from './storage.js';
+import { initPwa } from './pwa.js';
 
 async function init() {
   try {
@@ -65,4 +66,5 @@ function handleRoute(works, screen) {
 }
 
 // Boot
+initPwa();
 init();

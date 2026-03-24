@@ -4,6 +4,7 @@ import { getProgress, updateProgress, recordQuiz, getLevelStats, isMastered, get
 import { fetchVocab, getWordsForLevel, getAllWords } from './data.js';
 import { generateQuestionSet, countFormIdEligible } from './questions.js';
 import { createSession, currentQuestion, answerQuestion, getResults } from './state.js';
+import { renderPwaHomePrompt } from './pwa.js';
 
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => document.querySelectorAll(sel);
@@ -56,6 +57,7 @@ export function renderHome(works) {
       </div>
     </div>
   `;
+  renderPwaHomePrompt(home.querySelector('.screen-inner'));
 
   home.addEventListener('click', async (e) => {
     const card = e.target.closest('[data-work-id]');
